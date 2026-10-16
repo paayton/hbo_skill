@@ -1,0 +1,12 @@
+*.pcapng
+*.xlsx
+__pycache__/
+*.pyc
+scripts/inject_results.jsonl
+scripts/inject_queue.txt
+scripts/*.log
+dsn_backup.reg
+jobs.csv
+fees.csv
+sono_list.txt
+scripts/sql_log.txt
