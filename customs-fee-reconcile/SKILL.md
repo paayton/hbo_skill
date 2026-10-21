@@ -13,7 +13,7 @@ description: 报关费对账（用户说"对报关单"即本类目：万海、CO
 2. **账单侧金额 = `合计(CNY)` 列**（报关费+联单费+查验费+加班费）。HBO 的"清关费/报关费"金额实测与账单合计构成一致（如 80 报关+150 联单 = 230 一条费用），**不是只核报关费列**
 3. **系统侧** = clientid 1332541068 名下 `feename_c='清关费/报关费'`（feeid=1347041068）、rptype=1、未作废（isdeleted≠'Y'）、未销账（paypass='N'/空；其他=已销账剔除）的费用累加；fees.csv 同时带 `usercode`（createuser 换算的录入人英文代码，供操作列用）
 4. **判定 = 子集和（用户 2026-10-20 晚定版，同万海口径）**：拼单组账单合计在系统费用里**存在**（单笔等值或几笔之和等于账单合计）→ 一致；**系统多记的其他费用不构成异常**（实测：一工作单费用 320+140 两条，组账单 320 → 一致；按累加值比对会误报差额 140）。组内无费用 →「系统金额无票面X」；费用凑不出 →「差额X（票面-系统，负值=系统多）」。**不过滤 rpdate/cutoff**（工作单费用跨月累积，靠子集和吸收）
-5. **匹配键 = 提运单号**（账单"提运单号"列 → HBO `job_shipping_2026.sono`；注意"业务编号"列偶尔与提运单号不一致，必须用提运单号列）。**只用提运单号匹配，绝不用箱号/合同号/业务编号查**（用户定版 2026-10-20）。**HBO 无报关单号数据**（job_declinfo 表全空，2026-10-20 验证），报关单号仅展示不用来匹配
+5. **匹配键 = 提运单号**（账单"提运单号"列 → HBO `job_shipping_2026.sono`；注意"业务编号"列偶尔与提运单号不一致，必须用提运单号列）。**主匹配只用提运单号，绝不用箱号/合同号/业务编号做主匹配**（用户定版 2026-10-20）。**箱号兜底（用户 2026-10-21 定版"箱号是兜底方案"）**：提运单号在 HBO 查无（含拼单归组后仍无）时，用账单"集装箱号"列反查 `job_containers_2026.cntno`（多箱按非字母数字切分、≥6 位才收；JOIN job_shipping_2026 取 sono/blnoh），命中即采纳该工作单参与费用核对——报关费可能记在同箱的其他运单工作单上（实证：WA666V20064 查无，箱号 WHSU5249585 反查到 GOSZX26011720/sono WA666V20057，费用 80 应付未销账 → 一致）。箱号也查无才落到工作号尾段反查（尾段命中误配风险高，仅末位兜底）**HBO 无报关单号数据**（job_declinfo 表全空，2026-10-20 验证），报关单号仅展示不用来匹配
 6. **工作号 = blnoh**；jobid=0 的是假单/分单占位，剔除。一个运单可能命中多个工作单（分单 A/B），全部参与费用累加，显示取有费用的
 7. **拼单（母子单）归组（用户 2026-10-20 定版）**： HBO 侧费用常按拼单组记在母单工作单上，账单侧每个运单列一行，单票比对必"异常"。必须用万海网页版查子单归组：
    - `scripts/wanhai_groups.py` 通过 Kimi WebBridge 驱动用户浏览器查 `https://es.wanhai.com/ces-api/#/BKG/e-Booking/BKGlist`
@@ -34,7 +34,8 @@ description: 报关费对账（用户说"对报关单"即本类目：万海、CO
 0. 账单原件复制进工作区（桌面原件永不动）
 1. 解析：`python scripts/customs_bill.py 账单.xls` → 账单_rows.csv（核对行数与账单一致；基准：09月 50 行 5250 元）
 2. 取数（前提 `hbo_env.py to-proxy` + 用户重启 HBO 登录，见工作区 hbo-system.md）：
-   `python scripts/fetch_customs.py --scripts-dir "<工作区>\hbo-reconcile-main\scripts" --rows 账单_rows.csv` → jobs.csv / fees.csv
+   `python scripts/fetch_customs.py --scripts-dir "<工作区>\hbo-reconcile-main\scripts" --rows 账单_rows.csv` → jobs.csv / fees.csv。
+   fetch_customs 内部三级兜底：提运单号精确/去空格/后缀正则 → **箱号反查 job_containers_2026**（需 rows.csv 带 container 列）→ 工作号尾段反查（末位，可疑时按箱号复核）
 3. 拼单归组（前提 Kimi WebBridge 守护进程可用、用户浏览器已登录万海网页版）：
    先跑一次无 --groups 的 reconcile 圈出异常运单 → `python scripts/wanhai_groups.py --out groups.json --sonos <待查运单...>`（每个约 40-100 秒，页面很卡；建议增量分批跑，脚本每查完一个就落盘）
 4. 对账：`python scripts/reconcile_customs.py --bill 账单.xls --rows 账单_rows.csv --jobs jobs.csv --fees fees.csv --groups groups.json --out 输出.xlsx`

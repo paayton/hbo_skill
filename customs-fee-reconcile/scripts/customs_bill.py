@@ -34,6 +34,7 @@ def parse_bill(path):
     c_decl = col('报关单号') if '报关单号' in header else None
     c_total = col('合计(CNY)') if '合计(CNY)' in header else None
     c_fee = col('报关费(CNY)') if '报关费(CNY)' in header else None
+    c_box = col('集装箱号') if '集装箱号' in header else None   # 查无运单时箱号反查用（用户方法）
     rows = []
     for _, r in df.iloc[hdr_row + 1:].iterrows():
         seq = str(r[c_seq]).strip()
@@ -53,6 +54,7 @@ def parse_bill(path):
             'operator': clean(r[c_op]) if c_op is not None else '',
             'decl_fee': r[c_fee] if c_fee is not None else '',
             'total': r[c_total] if c_total is not None else '',
+            'container': clean(r[c_box]) if c_box is not None else '',
         })
     return rows
 

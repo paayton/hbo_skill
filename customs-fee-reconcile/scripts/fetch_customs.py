@@ -61,7 +61,18 @@ def main():
         sys.exit(1)
 
     with open(a.rows, encoding='utf-8-sig') as f:
-        sonos = sorted({r['sono'].strip() for r in csv.DictReader(f) if r['sono'].strip()})
+        rd = csv.DictReader(f)
+        rows_in = list(rd)
+        sonos = sorted({r['sono'].strip() for r in rows_in if r['sono'].strip()})
+        # 箱号兜底用：sono -> 该行箱号列表（集装箱号列可能多箱，按非字母数字切分）
+        import re as _re0
+        boxes_by_sono = {}
+        if 'container' in (rd.fieldnames or []):
+            for r in rows_in:
+                so = r['sono'].strip()
+                for b in _re0.split(r'[^0-9A-Za-z]+', r.get('container') or ''):
+                    if len(b) >= 6:
+                        boxes_by_sono.setdefault(so, []).append(b.upper())
     if not sonos:
         print('【失败】rows.csv 里没有 sono')
         sys.exit(1)
@@ -94,12 +105,43 @@ def main():
                 sys.exit(1)
             jobs_rows += res['rows']
 
-    # 工作号兜底反查（用户 2026-10-21 定版，实例：账单 WA666V20064 在 HBO 的 sono 是拼后
-    # 实际单号 CLL60201390Z，查无；但工作号 blnoh 仍含客户SO尾段数字 GOSZX26020064）。
-    # 规则：sono 查无的运单，取末尾数字段（≥5位）在 job_shipping_2026.blnoh 里模糊匹配，
-    # 唯一命中才采纳（多命中=歧义放弃），jobs.csv 里 sono 写账单单号以建立映射。
+    # 箱号兜底反查（用户方法，优先级高于工作号尾段；用户 2026-10-21 定版"箱号是兜底方案"）：
+    # 提运单号查无的，用账单箱号到 job_containers_2026 反查工作单。实证：WA666V20064
+    # 的费用实际记在 sono=WA666V20057 的 GOSZX26011720 下（80 元），箱号一查即中；
+    # 而工作号尾段反查会误配（GOSZX26020064 号码巧合但无费用）。
     found = {(r[1] or '').strip() for r in jobs_rows}
     miss = [s for s in sonos if s not in found and not any(x.endswith(s) for x in found)]
+    box_rows = []   # (bill_sono, jobid, blnoh)
+    box_miss = [s for s in miss if boxes_by_sono.get(s)]
+    if box_miss:
+        cond = ' OR '.join("c.cntno LIKE '%%%s%%'" % b
+                           for s in box_miss for b in boxes_by_sono[s])
+        rs = fh.queue_and_wait(
+            [("SELECT c.cntno, j.jobid, j.sono, j.blnoh, j.isdeleted "
+              "FROM job_containers_2026 c JOIN job_shipping_2026 j ON j.jobid = c.jobid "
+              "WHERE %s;" % cond)],
+            expect=1, timeout=a.timeout)
+        for res in rs:
+            if res['error']:
+                print('【失败】箱号兜底查询报错：%s' % res['error'])
+                sys.exit(1)
+            hits_by_sono = {}
+            for cntno, jobid, j_sono, blnoh, isdel in res['rows']:
+                if isdel == 'Y' or str(jobid) in ('0', ''):
+                    continue
+                for s in box_miss:
+                    if any(b in (cntno or '').upper() for b in boxes_by_sono[s]):
+                        hits_by_sono.setdefault(s, {})[str(jobid)] = (blnoh or '').strip()
+            for s, jobs in hits_by_sono.items():
+                for jobid, blnoh in sorted(jobs.items()):
+                    box_rows.append((s, jobid, blnoh or jobid))
+                    print('箱号兜底命中：%s -> %s (%s)' % (s, blnoh, jobid))
+        found |= {s for s, _, _ in box_rows}
+        miss = [s for s in miss if s not in found]
+
+    # 工作号尾段兜底反查（末位兜底；已有箱号兜底，此路只在箱号也查无时启用。
+    # 注意：尾段反查有误配风险（实证 WA666V20064 误配 GOSZX26020064），
+    # 命中工作单若名下无费用，行内标注"尾段反查命中，建议箱号人工复核"由 reconcile 侧处理）
     tail_rows = []   # (bill_sono, jobid, blnoh)
     if miss:
         import re as _re
@@ -158,6 +200,14 @@ def main():
             seen.add(key)
             bl_by_jobid[jobid] = blnoh or jobid
             w.writerow([sono, blnoh or jobid, jobid])
+            n += 1
+        for s, jobid, blnoh in box_rows:
+            key = (s, jobid)
+            if key in seen:
+                continue
+            seen.add(key)
+            bl_by_jobid[jobid] = blnoh
+            w.writerow([s, blnoh, jobid])   # sono 写账单单号，建立映射
             n += 1
         for s, jobid, blnoh in tail_rows:
             key = (s, jobid)
