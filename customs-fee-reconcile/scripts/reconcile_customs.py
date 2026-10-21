@@ -27,8 +27,8 @@
   - **同工作号的行归并排列**（含加拼母子单，如 177GPUPUS43996A 挪到 43996 相邻行），
     组间按最早原行号、组内保持原序，序号列保留原值；**工作号列相同值合并单元格**
     （用户 2026-10-21 09:33 定版）
-  - 工作号每组都填（母单+子单同号）；异常金额只填异常行：
-    「系统查无此工作单 / 系统金额无票面X / 差额X（票面-系统）」；
+  - 工作号每组都填（母单+子单同号）；异常金额只填异常行（用户 2026-10-21 15:03 定版写法）：
+    「系统查无此工作单 / 系统无X（系统没有这笔票面X的费用）/ 系统Y（系统只查到Y，与票面凑不平）」
     操作(员) = 组内应付费用行的录入人英文代码（app_users.usercode，如 KATELUO/ROSIEQIN，
     去重逗号连接；组内无费用行则留空。用户 2026-10-20 18:05 定版：不用客户自编号）
   - 异常行整行黄色（FFFF00）
@@ -239,12 +239,10 @@ def main():
         elif subset_match(bill_cents, pool):
             status, abnormal = 'ok', ''
         elif sum(pool) == 0:
-            status, abnormal = 'zero', '系统金额无票面%s' % ('%g' % (bill_cents / 100))
+            status, abnormal = 'zero', '系统无%s' % ('%g' % (bill_cents / 100))
         else:
             status = 'diff'
-            d = bill_cents - sum(pool)
-            abnormal = '差额%s（票面-系统，%s）' % (('%g' % (abs(d) / 100)),
-                                              '负值=系统多' if d < 0 else '正值=票面多')
+            abnormal = '系统%s' % ('%g' % (sum(pool) / 100))
         stats[status] = stats.get(status, 0) + len(grows)
         is_pin = len({r['sono'] for r in grows}) > 1   # 加拼单号组（多运单归组）
         for r in grows:
