@@ -94,6 +94,52 @@ def main():
                 sys.exit(1)
             jobs_rows += res['rows']
 
+    # 工作号兜底反查（用户 2026-10-21 定版，实例：账单 WA666V20064 在 HBO 的 sono 是拼后
+    # 实际单号 CLL60201390Z，查无；但工作号 blnoh 仍含客户SO尾段数字 GOSZX26020064）。
+    # 规则：sono 查无的运单，取末尾数字段（≥5位）在 job_shipping_2026.blnoh 里模糊匹配，
+    # 唯一命中才采纳（多命中=歧义放弃），jobs.csv 里 sono 写账单单号以建立映射。
+    found = {(r[1] or '').strip() for r in jobs_rows}
+    miss = [s for s in sonos if s not in found and not any(x.endswith(s) for x in found)]
+    tail_rows = []   # (bill_sono, jobid, blnoh)
+    if miss:
+        import re as _re
+        tail_by_sono = {}
+        for s in miss:
+            mt = _re.search(r'(\d{5,})$', s)
+            if mt:
+                tail_by_sono[s] = mt.group(1)
+        if tail_by_sono:
+            cond = ' OR '.join("blnoh LIKE '%%%s%%'" % t for t in set(tail_by_sono.values()))
+            rs = fh.queue_and_wait(
+                ["SELECT jobid, sono, blnoh, isdeleted FROM job_shipping_2026 WHERE %s;" % cond],
+                expect=1, timeout=a.timeout)
+            for res in rs:
+                if res['error']:
+                    print('【失败】工作号兜底查询报错：%s' % res['error'])
+                    sys.exit(1)
+                rows_by_tail = {}
+                for jobid, sono, blnoh, isdel in res['rows']:
+                    if isdel == 'Y' or str(jobid) in ('0', ''):
+                        continue
+                    blnoh = (blnoh or '').strip()
+                    for s, t in tail_by_sono.items():
+                        if t in blnoh:
+                            rows_by_tail.setdefault(s, {})[str(jobid)] = blnoh
+                for s, jobs in rows_by_tail.items():
+                    # 优先采纳工作号【以尾段数字结尾】的（GOSZX26080096 型）；
+                    # 同尾段多个（GOSHA/GOSZX 分部）全采纳——子集和判定容忍系统多记；
+                    # 无结尾命中时仅唯一子串命中才采纳；其余歧义放弃
+                    ends = {j: b for j, b in jobs.items()
+                            if b.endswith(tail_by_sono[s])}
+                    pick = ends if ends else (jobs if len(jobs) == 1 else {})
+                    if pick:
+                        for jobid, blnoh in sorted(pick.items()):
+                            tail_rows.append((s, jobid, blnoh or jobid))
+                            print('工作号兜底命中：%s -> %s (%s)' % (s, blnoh, jobid))
+                    else:
+                        print('工作号兜底歧义放弃：%s 命中 %d 个不同工作号'
+                              % (s, len({b for b in jobs.values()})))
+
     bl_by_jobid = {}
     seen = set()
     outdir = os.path.dirname(os.path.abspath(a.rows))
@@ -112,6 +158,14 @@ def main():
             seen.add(key)
             bl_by_jobid[jobid] = blnoh or jobid
             w.writerow([sono, blnoh or jobid, jobid])
+            n += 1
+        for s, jobid, blnoh in tail_rows:
+            key = (s, jobid)
+            if key in seen:
+                continue
+            seen.add(key)
+            bl_by_jobid[jobid] = blnoh
+            w.writerow([s, blnoh, jobid])   # sono 写账单单号，建立映射
             n += 1
     print('jobs.csv %d 行（覆盖 %d/%d 个运单）' % (n, len({r[0] for r in seen}), len(sonos)))
 

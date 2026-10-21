@@ -18,7 +18,8 @@
        归到去尾字母的基数号（177GPUPUS43996）的组，工作号与基数号一致，金额按组内
        多票合计核（实测：43996+43996A 合计 160 = 系统 GOSZX26012824 费用 160）；
        COSU 纯数字超 10 位的按前 10 位数字核归组（646355248001 → 6463552480）
-  - **加拼单号行红色高亮（FF0000）**：凡经拼单归组处理的行（一致也标红，区别于普通异常的黄）
+  - **拼单行不再特殊高亮（用户 2026-10-21 12:08 定版）**：只保留异常行黄色；归组仅用于
+    正确归并/核对，加拼单号的一致行与普通一致行外观相同
 
 输出（用户定版）：
   - 原账单不动；**账单自带 工作号/异常金额/操作 模板列时写进原列，绝不重复插入**
@@ -47,7 +48,6 @@ from openpyxl import Workbook
 from openpyxl.styles import PatternFill
 
 YELLOW = PatternFill(start_color='FFFF00', fill_type='solid')
-RED = PatternFill(start_color='FFFF0000', fill_type='solid')
 FEENAME = '清关费/报关费'
 
 
@@ -107,7 +107,9 @@ def system_group_key(sono):
 
 
 def build_row_groups(rows, groups_path):
-    """返回 {seq: group_key}；同拼单组行共享 key。"""
+    """返回 ({seq: group_key}, {group_key: set(万海组全部组员)})。
+    同拼单组行共享 key；web_members 含不在本账单的组员，供费用池反查
+    （组员的报关费可能记在账单外组员的工作单上，如 02月 WA666V20190 组）。"""
     parent = {r['seq']: r['seq'] for r in rows}
 
     def find(x):
@@ -125,6 +127,7 @@ def build_row_groups(rows, groups_path):
     for r in rows:
         seqs_by_sono.setdefault(r['sono'], []).append(r['seq'])
 
+    web_members = {}   # group_key -> set(sonos)，万海网页组全部组员（含账单外）
     # a. 万海（WA/WI）：网页版子单归组
     if groups_path:
         sono_group = {}
@@ -133,13 +136,17 @@ def build_row_groups(rows, groups_path):
                 grp = g.get('group')
                 if g.get('found') and grp and len(grp) > 1:
                     for so in grp:
-                        sono_group[so] = grp[0]
-        for so, key in sono_group.items():
+                        sono_group[so] = (grp[0], set(grp))
+        for so, (key, members) in sono_group.items():
             if so not in seqs_by_sono:
                 continue  # 组里的运单不在本账单（如子单的兄弟单没进账单）
             for r in rows:
-                if r['sono'] in sono_group and sono_group[r['sono']] == key:
+                if r['sono'] in sono_group and sono_group[r['sono']][0] == key:
                     union(r['seq'], seqs_by_sono[so][0])
+        for r in rows:
+            if r['sono'] in sono_group:
+                key, members = sono_group[r['sono']]
+                web_members.setdefault(find(r['seq']), set()).update(members)
 
     # b. 非万海：系统侧归组（尾字母单号归基数号 / COSU 数字核归组）
     key_by_sono = {}
@@ -162,7 +169,7 @@ def build_row_groups(rows, groups_path):
     for so, seqs in seqs_by_sono.items():
         for s in seqs[1:]:
             union(seqs[0], s)
-    return {r['seq']: find(r['seq']) for r in rows}
+    return {r['seq']: find(r['seq']) for r in rows}, web_members
 
 
 def main():
@@ -179,7 +186,7 @@ def main():
     for r in rows:
         r['total_f'] = float(r['total'] or 0) if str(r['total']).strip() else 0.0
     find_jobs, fee_list_by_jobid = load_maps(a.jobs, a.fees)
-    row_group = build_row_groups(rows, a.groups)
+    row_group, web_members = build_row_groups(rows, a.groups)
 
     groups = {}
     for r in rows:
@@ -188,14 +195,26 @@ def main():
     result = {}
     stats = {'ok': 0, 'diff': 0, 'zero': 0, 'nojob': 0}
     for gkey, grows in groups.items():
-        jobids, jobnos = [], []
+        # 万海组：费用池覆盖全组组员（含账单外，如 WA666V20191——组员的报关费
+        # 可能记在账单外组员的工作单上）；非万海组只用组内运单
+        cand_sonos = set()
         for r in grows:
-            cands = [r['sono']]
-            k = system_group_key(r['sono'])   # COSU 等拼单长号查不到时兜底查去尾基数号
-            if k and k != r['sono']:
-                cands.append(k)
-            for s in cands:
+            cand_sonos.update(web_members.get(gkey) or {r['sono']})
+        jobids, jobnos = [], []
+        disp_ids = []   # 显示工作号只用账单内运单命中的工作单（账单外组员只进费用池）
+        for r in grows:
+            for s in [r['sono']] + ([system_group_key(r['sono'])]
+                                    if system_group_key(r['sono']) not in (None, r['sono']) else []):
                 for jobno, jobid in find_jobs(s):
+                    if jobid not in disp_ids:
+                        disp_ids.append(jobid)
+        for s in sorted(cand_sonos):
+            cands = [s]
+            k = system_group_key(s)   # COSU 等拼单长号查不到时兜底查去尾基数号
+            if k and k != s:
+                cands.append(k)
+            for s2 in cands:
+                for jobno, jobid in find_jobs(s2):
                     if jobid not in jobids:
                         jobids.append(jobid)
                         jobnos.append(jobno)
@@ -208,10 +227,11 @@ def main():
                 if ucode and ucode not in ops:
                     ops.append(ucode)
         operator = ','.join(ops)   # 组内应付费用行录入人去重逗号连接；无费用行则留空
-        # 显示工作号：优先有费用的单；无后缀(真单)优先
-        fee_jobs = [j for j in jobids if fee_list_by_jobid.get(j)]
-        disp_ids = fee_jobs or jobids
-        disp = sorted({n for n, j in zip(jobnos, jobids) if j in disp_ids},
+        # 显示工作号：只取账单内运单命中的工作单，优先有费用的；无后缀(真单)优先
+        fee_jobs = [j for j in disp_ids if fee_list_by_jobid.get(j)]
+        show_ids = fee_jobs or disp_ids
+        name_by_id = dict(zip(jobids, jobnos))
+        disp = sorted({name_by_id[j] for j in show_ids if j in name_by_id},
                       key=lambda x: (re.search(r'[A-Z]$', x or '') is not None, x))
         workno = ','.join(disp)
         if not jobids:
@@ -298,11 +318,11 @@ def main():
         slot += 1
         for j in range(1, ncol_src + 1):
             ws.cell(slot, j).value = snap[i][j - 1]
-        workno, abnormal, operator, is_pin = result[seq_of[i]]
+        workno, abnormal, operator, _pin = result[seq_of[i]]
         ws.cell(slot, c_workno, workno or None)
         ws.cell(slot, c_abn, abnormal or None)
         ws.cell(slot, c_op, operator or None)
-        fill = RED if is_pin else (YELLOW if abnormal else NONE_FILL)
+        fill = YELLOW if abnormal else NONE_FILL   # 拼单不再标红（用户 2026-10-21 定版）
         for j in range(1, ncol + 1):
             ws.cell(slot, j).fill = fill
         key = workno or None
