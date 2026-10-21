@@ -40,6 +40,7 @@
 import argparse
 import csv
 import json
+import os
 import re
 from itertools import combinations
 
@@ -81,7 +82,17 @@ def load_maps(jobs_path, fees_path):
             cents = int(round(float(r['amt'] or 0) * 100))
             fee_list_by_jobid.setdefault((r['jobid'] or '').strip(), []).append(
                 (cents, (r.get('usercode') or '').strip()))
-    return find_jobs, fee_list_by_jobid, doc_by_jobid
+
+    # 别家名下同名目应付费用（结算单位错录侦测）：jobid -> [(cliname, amt_str)]
+    other_by_jobid = {}
+    other_path = os.path.join(os.path.dirname(os.path.abspath(fees_path)),
+                              'fees_other.csv')
+    if os.path.exists(other_path):
+        with open(other_path, encoding='utf-8-sig') as f:
+            for r in csv.DictReader(f):
+                other_by_jobid.setdefault((r['jobid'] or '').strip(), []).append(
+                    ((r.get('cliname') or '').strip(), (r.get('amt') or '').strip()))
+    return find_jobs, fee_list_by_jobid, doc_by_jobid, other_by_jobid
 
 
 def subset_match(target_cents, amounts):
@@ -189,7 +200,7 @@ def main():
     rows = list(csv.DictReader(open(a.rows, encoding='utf-8-sig')))
     for r in rows:
         r['total_f'] = float(r['total'] or 0) if str(r['total']).strip() else 0.0
-    find_jobs, fee_list_by_jobid, doc_by_jobid = load_maps(a.jobs, a.fees)
+    find_jobs, fee_list_by_jobid, doc_by_jobid, other_by_jobid = load_maps(a.jobs, a.fees)
     row_group, web_members = build_row_groups(rows, a.groups)
 
     groups = {}
@@ -243,6 +254,20 @@ def main():
             status, abnormal = 'ok', ''
         elif sum(pool) == 0:
             status, abnormal = 'zero', '系统无%s' % ('%g' % (bill_cents / 100))
+            # 结算单位错录侦测（用户 2026-10-21 17:40 定版）：宇中名下没有但别家名下
+            # 有同名目应付费用 → 备注"代码错误"，指明录在谁家名下、金额多少
+            others = [o for j in jobids for o in other_by_jobid.get(j, [])]
+            if others:
+                by_name = {}
+                for name, amt in others:
+                    try:
+                        amt_s = '%g' % float(amt)   # 80.00 -> 80
+                    except (TypeError, ValueError):
+                        amt_s = amt or '?'
+                    by_name.setdefault(name or '未知客户', []).append(amt_s)
+                detail = '，'.join('%s名下%s' % (n, '+'.join(amts))
+                                   for n, amts in by_name.items())
+                abnormal += '（代码错误，录在%s）' % detail
         else:
             status = 'diff'
             abnormal = '系统%s' % ('%g' % (sum(pool) / 100))

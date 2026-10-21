@@ -293,6 +293,34 @@ def main():
     else:
         open(fees_csv, 'w', encoding='utf-8-sig').write(
             'jobid,rptype,feename_c,amt,paypass,rpdate,usercode\n')
+
+    # 别家名下同名目应付费用（结算单位错录侦测，用户 2026-10-21 17:40 定版）：
+    # 宇中名下没有、但别家名下有"清关费/报关费"应付未销账 → reconcile 在"系统无X"
+    # 后追加"（代码错误，录在XXX名下…）"。同 crm_client 取客户名。
+    other_csv = os.path.join(outdir, 'fees_other.csv')
+    k = 0
+    if jobids:
+        res = fh.queue_and_wait(
+            ["SELECT CAST(a.jobid AS TEXT), c.cliname_c, a.amt "
+             "FROM stl_arap_2026 a LEFT JOIN crm_client c "
+             "ON CAST(c.clientid AS TEXT) = CAST(a.clientid AS TEXT) "
+             "WHERE a.jobid IN ({jobids}) AND a.feeid = '{feeid}' AND a.rptype = '1' "
+             "AND a.clientid <> '{cid}' "
+             "AND (a.isdeleted IS NULL OR a.isdeleted <> 'Y') "
+             "AND (a.paypass IS NULL OR a.paypass IN ('N','')) "
+             "ORDER BY a.jobid, a.amt DESC;".format(jobids=inlist(jobids), feeid=FEEID,
+                                                    cid=CLIENTID)],
+            expect=1, timeout=a.timeout)[0]
+        with open(other_csv, 'w', newline='', encoding='utf-8-sig') as f:
+            w = csv.writer(f)
+            w.writerow(['jobid', 'cliname', 'amt'])
+            if not res['error']:
+                for jobid, cliname, amt in res['rows']:
+                    w.writerow([jobid, (cliname or '').strip(), amt or ''])
+                    k += 1
+    else:
+        open(other_csv, 'w', encoding='utf-8-sig').write('jobid,cliname,amt\n')
+    print('fees_other.csv %d 行（别家名下同名目应付费用，结算单位错录侦测）' % k)
     print('fees.csv %d 行（结算单位 SHAYUNSHG=%s，名目 %s，操作=createuser 英文代码）'
           % (m, CLIENTID, FEENAME))
     print('下一步：python reconcile_customs.py --bill <账单.xls> --rows "%s" --jobs "%s" '
