@@ -30,9 +30,18 @@ FEENAME = '清关费/报关费'
 FEEID = '1347041068'         # fil_feeitem.feename_c='清关费/报关费'（2026-10-20 探库验证）
 
 # 工作单一条 SQL 搞定三种匹配（精确 / 去尾空格 / 后缀正则），不再分两条往返
-SQL_JOBS = ("SELECT jobid, sono, blnoh, isdeleted FROM {table} "
-            "WHERE sono IN ({inlist}) OR rtrim(sono) IN ({inlist}) "
-            "OR rtrim(sono) ~ '({alts})$';")
+# serviceby = 委托单 sal_ordinfo 的"操作"（客服，用户 2026-10-21 16:31 在 HBO 界面核对定版；
+# 注意不是 documentby 文件人员、不是 opr_decby 报关操作——这两个字段实测多为空）。
+# GROUP BY jobid 收拢防分单笛卡尔积；0/空=未填
+_DOC_JOIN = ("LEFT JOIN (SELECT jobid, MAX(NULLIF(serviceby, '0')) AS serviceby "
+             "FROM public.sal_ordinfo_2026 GROUP BY jobid) s ON s.jobid = j.jobid "
+             "LEFT JOIN (SELECT jobid, MAX(NULLIF(serviceby, '0')) AS serviceby "
+             "FROM public._sal_ordinfo GROUP BY jobid) s2 ON s2.jobid = j.jobid ")
+SQL_JOBS = ("SELECT j.jobid, j.sono, j.blnoh, "
+            "COALESCE(NULLIF(s.serviceby, '0'), NULLIF(s2.serviceby, '0')) AS op, "
+            "j.isdeleted FROM {table} j " + _DOC_JOIN +
+            "WHERE j.sono IN ({inlist}) OR rtrim(j.sono) IN ({inlist}) "
+            "OR rtrim(j.sono) ~ '({alts})$';")
 # 费用在 SQL 层锁定名目/应付/未作废/未销账，不 JOIN 费用字典、不拉无关名目，
 # 传回来的每一行都是要的（reconcile 侧仍保留同样过滤做双保险，兼容旧 fees.csv）
 SQL_FEES = ("SELECT a.jobid, a.rptype, a.amt, a.paypass, a.rpdate, a.createuser "
@@ -184,40 +193,71 @@ def main():
 
     bl_by_jobid = {}
     seen = set()
+    op_by_jobid = {}          # jobid -> 文件人员数字工号（主查询 SELECT 带 doc）
+    main_rows = []             # (sono, blnoh, jobid)
+    out_rows = []              # (sono, blnoh, jobid) 含箱号/尾段兜底
+    for jobid, sono, blnoh, op, isdel in jobs_rows:
+        jobid, sono, blnoh = str(jobid), (sono or '').strip(), (blnoh or '').strip()
+        if isdel == 'Y' or jobid in ('0', ''):
+            continue  # 作废单、假单剔除
+        key = (sono, jobid)
+        if key in seen:
+            continue
+        seen.add(key)
+        bl_by_jobid[jobid] = blnoh or jobid
+        if op and str(op) not in ('0', 'None', ''):
+            op_by_jobid[jobid] = str(op)
+        main_rows.append((sono, blnoh or jobid, jobid))
+    for s, jobid, blnoh in box_rows + tail_rows:
+        key = (s, jobid)
+        if key in seen:
+            continue
+        seen.add(key)
+        bl_by_jobid[jobid] = blnoh
+        out_rows.append((s, blnoh, jobid))   # sono 写账单单号，建立映射
+
+    # 箱号/尾段兜底命中的 jobid 补查操作(serviceby)（sal_ordinfo 按 jobid 收拢，同 _DOC_JOIN 口径）
+    need_op = [j for j in bl_by_jobid if j not in op_by_jobid]
+    if need_op:
+        rs = fh.queue_and_wait(
+            ["SELECT jobid, MAX(NULLIF(serviceby, '0')) AS serviceby FROM "
+             "public.sal_ordinfo_2026 WHERE jobid IN (%s) GROUP BY jobid;"
+             % inlist(need_op),
+             "SELECT jobid, MAX(NULLIF(serviceby, '0')) AS serviceby FROM "
+             "public._sal_ordinfo WHERE jobid IN (%s) GROUP BY jobid;"
+             % inlist(need_op)],
+            expect=2, timeout=a.timeout)
+        for res in rs:
+            if res['error']:
+                continue   # 补查失败不致命，doc 留空
+            for jobid, d in res['rows']:
+                if d and str(d) not in ('0', 'None', '') and str(jobid) not in op_by_jobid:
+                    op_by_jobid[str(jobid)] = str(d)
+
+    # 操作数字工号 -> 英文代码（app_users），写进 jobs.csv 的 op 列
+    op_ids = sorted({d for d in op_by_jobid.values() if d not in ('0', 'None', '')})
+    op_ucode = {}
+    if op_ids:
+        ru = fh.queue_and_wait(
+            ["SELECT userid, usercode FROM app_users WHERE CAST(userid AS TEXT) IN (%s);"
+             % ','.join("'%s'" % x for x in op_ids)],
+            expect=1, timeout=a.timeout)[0]
+        if not ru['error']:
+            op_ucode = {str(uid): (uc or '') for uid, uc in ru['rows']}
+
     outdir = os.path.dirname(os.path.abspath(a.rows))
     jobs_csv = os.path.join(outdir, 'jobs.csv')
     n = 0
     with open(jobs_csv, 'w', newline='', encoding='utf-8-sig') as f:
         w = csv.writer(f)
-        w.writerow(['sono', 'jobno', 'jobid'])
-        for jobid, sono, blnoh, isdel in jobs_rows:
-            jobid, sono, blnoh = str(jobid), (sono or '').strip(), (blnoh or '').strip()
-            if isdel == 'Y' or jobid in ('0', ''):
-                continue  # 作废单、假单剔除
-            key = (sono, jobid)
-            if key in seen:
-                continue
-            seen.add(key)
-            bl_by_jobid[jobid] = blnoh or jobid
-            w.writerow([sono, blnoh or jobid, jobid])
+        w.writerow(['sono', 'jobno', 'jobid', 'op'])
+        for sono, blnoh, jobid in main_rows + out_rows:
+            w.writerow([sono, blnoh, jobid,
+                        op_ucode.get(op_by_jobid.get(jobid, ''),
+                                      op_by_jobid.get(jobid, ''))])
             n += 1
-        for s, jobid, blnoh in box_rows:
-            key = (s, jobid)
-            if key in seen:
-                continue
-            seen.add(key)
-            bl_by_jobid[jobid] = blnoh
-            w.writerow([s, blnoh, jobid])   # sono 写账单单号，建立映射
-            n += 1
-        for s, jobid, blnoh in tail_rows:
-            key = (s, jobid)
-            if key in seen:
-                continue
-            seen.add(key)
-            bl_by_jobid[jobid] = blnoh
-            w.writerow([s, blnoh, jobid])   # sono 写账单单号，建立映射
-            n += 1
-    print('jobs.csv %d 行（覆盖 %d/%d 个运单）' % (n, len({r[0] for r in seen}), len(sonos)))
+    print('jobs.csv %d 行（覆盖 %d/%d 个运单；op=工作单操作serviceby英文代码）'
+          % (n, len({r[0] for r in seen}), len(sonos)))
 
     jobids = sorted(bl_by_jobid)
     fees_csv = os.path.join(outdir, 'fees.csv')

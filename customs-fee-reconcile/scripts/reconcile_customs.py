@@ -53,10 +53,14 @@ FEENAME = '清关费/报关费'
 
 def load_maps(jobs_path, fees_path):
     jobs_by_sono = {}
+    doc_by_jobid = {}
     with open(jobs_path, encoding='utf-8-sig') as f:
         for r in csv.DictReader(f):
             jobs_by_sono.setdefault((r['sono'] or '').strip(), []).append(
                 ((r['jobno'] or '').strip(), (r['jobid'] or '').strip()))
+            op = (r.get('op') or r.get('doc') or '').strip()   # op=工作单操作(serviceby)
+            if op:
+                doc_by_jobid[(r['jobid'] or '').strip()] = op
 
     def find_jobs(sono):
         out = []
@@ -77,7 +81,7 @@ def load_maps(jobs_path, fees_path):
             cents = int(round(float(r['amt'] or 0) * 100))
             fee_list_by_jobid.setdefault((r['jobid'] or '').strip(), []).append(
                 (cents, (r.get('usercode') or '').strip()))
-    return find_jobs, fee_list_by_jobid
+    return find_jobs, fee_list_by_jobid, doc_by_jobid
 
 
 def subset_match(target_cents, amounts):
@@ -185,7 +189,7 @@ def main():
     rows = list(csv.DictReader(open(a.rows, encoding='utf-8-sig')))
     for r in rows:
         r['total_f'] = float(r['total'] or 0) if str(r['total']).strip() else 0.0
-    find_jobs, fee_list_by_jobid = load_maps(a.jobs, a.fees)
+    find_jobs, fee_list_by_jobid, doc_by_jobid = load_maps(a.jobs, a.fees)
     row_group, web_members = build_row_groups(rows, a.groups)
 
     groups = {}
@@ -226,7 +230,6 @@ def main():
                 pool.append(cents)
                 if ucode and ucode not in ops:
                     ops.append(ucode)
-        operator = ','.join(ops)   # 组内应付费用行录入人去重逗号连接；无费用行则留空
         # 显示工作号：只取账单内运单命中的工作单，优先有费用的；无后缀(真单)优先
         fee_jobs = [j for j in disp_ids if fee_list_by_jobid.get(j)]
         show_ids = fee_jobs or disp_ids
@@ -243,11 +246,22 @@ def main():
         else:
             status = 'diff'
             abnormal = '系统%s' % ('%g' % (sum(pool) / 100))
+        # 操作列规则（用户 2026-10-21 16:15/16:31 定版）：只有异常组才写操作名；
+        # 差额组=费用录入人；系统无费用组=工作单操作（sal_ordinfo.serviceby，
+        # 用户在工作单界面核对定版；不是文件人员 documentby、不是 opr_decby——后两者多为空）；
+        # 查无工作单/一致组留空
+        if status == 'ok' or status == 'nojob':
+            operator = ''
+        elif ops:
+            operator = ','.join(ops)
+        else:
+            operator = ','.join(sorted({doc_by_jobid[j] for j in jobids
+                                        if doc_by_jobid.get(j)}))
         stats[status] = stats.get(status, 0) + len(grows)
         is_pin = len({r['sono'] for r in grows}) > 1   # 加拼单号组（多运单归组）
         for k, r in enumerate(grows):
-            # 异常金额+操作每组只标组内首行（用户 2026-10-21 15:34/15:54 定版），
-            # 操作列不合并单元格；整组黄色高亮不受影响（is_bad 随组传递）
+            # 异常金额+操作每组只标组内首行（用户 2026-10-21 15:34/16:05 定版，
+            # 三列同span合并单元格）；整组黄色高亮不受影响（is_bad 随组传递）
             result[r['seq']] = (workno, abnormal if k == 0 else '',
                                 operator if k == 0 else '',
                                 is_pin, status != 'ok')

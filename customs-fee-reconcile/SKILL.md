@@ -25,7 +25,7 @@ description: 报关费对账（用户说"对报关单"即本类目：万海、CO
    - **同工作号的行归并排列**（用户 2026-10-21 定版）：含加拼母子单（如 177GPUPUS43996A 挪到与 177GPUPUS43996 相邻，物理行 11+18 → 11+12）；组间按组内最早原行号排序、组内保持原序；无工作号的行互不合并留在原位；**序号列保留原值不动**（只动物理行位置，便于回溯原账单）；**同工作号组（加拼单号）工作号/异常金额/操作三列同span合并单元格展示**（用户 2026-10-21 16:05 定版；标注值只写组内首行，合并后一组一格）
    - 工作号：每组都填（母单+子单填同一个）；查无工作单留空
    - 异常金额：一致留空；否则**每组只在组内首行标一次**（用户 2026-10-21 15:34 定版"一次"），写「系统查无此工作单 / 系统无X / 系统Y」（用户习惯写法：差额不再写"差额X（票面-系统）"，直接标系统金额）；组内其余行留空，但整组仍黄色高亮
-   - 操作(员) = 组内 HBO **应付费用行的录入人**（app_users.usercode 英文代码，如 KATELUO/ROSIEQIN；createuser→usercode 换算在 fetch_customs.py 里做），组内多行去重逗号连接，只写组内首行（三列合并后一组一格，用户 2026-10-21 16:05 定版）；**组内无费用行则留空**（用户 2026-10-20 18:05 定版：**不要用账单"客户自编号"列**）
+   - 操作(员)（用户 2026-10-21 16:15 定版**吸取教训：只有异常组才写操作名，一致组留空**；只写组内首行，三列合并后一组一格）：**差额组** = 组内 HBO 应付费用行的录入人（app_users.usercode 英文代码，createuser→usercode 换算在 fetch_customs.py；多行去重逗号连接）；**系统无费用组** = 工作单的**操作**（委托单 sal_ordinfo.**serviceby**，用户 2026-10-21 16:31 在 HBO 工作单界面核对定版；**不是** documentby 文件人员、不是 opr_decby 报关操作——后两个字段实测多为空；fetch_customs 已换算英文代码写入 jobs.csv 的 op 列）；**查无工作单/一致组留空**。不要用账单"客户自编号"列（用户 2026-10-20 18:05 定版）
 9. 只有人民币，无美金规则；销账费用剔除（沿用舱单费定版）。**拼单一致行不再红色高亮（用户 2026-10-21 12:08 定版）**，全表只有异常行黄色（FFFF00），红色已废除
 10. **取数时滞**：文档部可能实时补录，异常偏多时重新 fetch 再判定
 
@@ -34,7 +34,7 @@ description: 报关费对账（用户说"对报关单"即本类目：万海、CO
 0. 账单原件复制进工作区（桌面原件永不动）
 1. 解析：`python scripts/customs_bill.py 账单.xls` → 账单_rows.csv（核对行数与账单一致；基准：09月 50 行 5250 元）
 2. 取数（前提 `hbo_env.py to-proxy` + 用户重启 HBO 登录，见工作区 hbo-system.md）：
-   `python scripts/fetch_customs.py --scripts-dir "<工作区>\hbo-reconcile-main\scripts" --rows 账单_rows.csv` → jobs.csv / fees.csv。
+   `python scripts/fetch_customs.py --scripts-dir "<工作区>\hbo-reconcile-main\scripts" --rows 账单_rows.csv` → jobs.csv（含 **op 列=工作单操作(serviceby)** 英文代码）/ fees.csv。
    fetch_customs 内部三级兜底：提运单号精确/去空格/后缀正则 → **箱号反查 job_containers_2026**（需 rows.csv 带 container 列）→ 工作号尾段反查（末位，可疑时按箱号复核）
 3. 拼单归组（前提 Kimi WebBridge 守护进程可用、用户浏览器已登录万海网页版）：
    先跑一次无 --groups 的 reconcile 圈出异常运单 → `python scripts/wanhai_groups.py --out groups.json --sonos <待查运单...>`（每个约 40-100 秒，页面很卡；建议增量分批跑，脚本每查完一个就落盘）
