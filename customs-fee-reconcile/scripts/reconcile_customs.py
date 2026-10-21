@@ -25,7 +25,7 @@
   - 原账单不动；**账单自带 工作号/异常金额/操作 模板列时写进原列，绝不重复插入**
     （缺失的列才追加到末尾）
   - **同工作号的行归并排列**（含加拼母子单，如 177GPUPUS43996A 挪到 43996 相邻行），
-    组间按最早原行号、组内保持原序，序号列保留原值；**工作号列相同值合并单元格；操作值只写组内首行、列不合并**
+    组间按最早原行号、组内保持原序，序号列保留原值；**同工作号组（加拼单号）工作号/异常金额/操作三列同span合并单元格**
     （用户 2026-10-21 09:33 定版）
   - 工作号每组都填（母单+子单同号）；异常金额只填异常行（用户 2026-10-21 15:03 定版写法）：
     「系统查无此工作单 / 系统无X（系统没有这笔票面X的费用）/ 系统Y（系统只查到Y，与票面凑不平）」
@@ -340,8 +340,11 @@ def main():
     if run_key and run_bottom > run_start:
         merge_spans.append((run_start, run_bottom))
     for top, bottom in merge_spans:
-        ws.merge_cells(start_row=top, start_column=c_workno,
-                       end_row=bottom, end_column=c_workno)
+        # 加拼单号同工作号组：工作号/异常金额/操作三列同span合并单元格
+        # （用户 2026-10-21 16:05 定版；标注本就只写组内首行，合并后一组一格）
+        for c in (c_workno, c_abn, c_op):
+            ws.merge_cells(start_row=top, start_column=c,
+                           end_row=bottom, end_column=c)
     print('同工作号归并 %d 组（合并工作号单元格 %d 处）'
           % (len([1 for v in by_key.values() if len(v) > 1]), len(merge_spans)))
     wb.save(a.out)
