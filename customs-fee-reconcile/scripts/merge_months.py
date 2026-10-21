@@ -86,6 +86,12 @@ def append_month(all_ws, src_ws, month, row_off, cols):
             copy_cell(src_ws.cell(i, j), all_ws.cell(r, j + 1))
         if i == 1:    # 原标题行（文件名），跳过对齐
             continue
+        # 整行高亮对齐：源行若是黄色异常行，铺满全部规范列（含月份列）
+        src_fill = src_ws.cell(i, 1).fill
+        if (src_fill and src_fill.fill_type == 'solid' and src_fill.start_color
+                and src_fill.start_color.rgb and src_fill.start_color.rgb.endswith('FFFF00')):
+            for j in range(1, len(cols) + 2):
+                all_ws.cell(r, j).fill = copy.copy(src_fill)
         # 数据/总计行：按表头名归位（先清掉位置拷贝，再写对齐值）
         snap = [all_ws.cell(r, j + 1).value for j in range(1, ncols + 1)]
         for j in range(2, ncols + 2):
