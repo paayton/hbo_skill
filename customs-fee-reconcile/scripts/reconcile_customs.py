@@ -25,7 +25,7 @@
   - 原账单不动；**账单自带 工作号/异常金额/操作 模板列时写进原列，绝不重复插入**
     （缺失的列才追加到末尾）
   - **同工作号的行归并排列**（含加拼母子单，如 177GPUPUS43996A 挪到 43996 相邻行），
-    组间按最早原行号、组内保持原序，序号列保留原值；**工作号列相同值合并单元格，操作列随组一并合并**
+    组间按最早原行号、组内保持原序，序号列保留原值；**工作号列相同值合并单元格；操作值只写组内首行、列不合并**
     （用户 2026-10-21 09:33 定版）
   - 工作号每组都填（母单+子单同号）；异常金额只填异常行（用户 2026-10-21 15:03 定版写法）：
     「系统查无此工作单 / 系统无X（系统没有这笔票面X的费用）/ 系统Y（系统只查到Y，与票面凑不平）」
@@ -246,9 +246,10 @@ def main():
         stats[status] = stats.get(status, 0) + len(grows)
         is_pin = len({r['sono'] for r in grows}) > 1   # 加拼单号组（多运单归组）
         for k, r in enumerate(grows):
-            # 异常金额每组只标一次（组内首行，用户 2026-10-21 15:34 定版"一次"）；
-            # 整组黄色高亮不受影响（is_bad 随组传递）
-            result[r['seq']] = (workno, abnormal if k == 0 else '', operator,
+            # 异常金额+操作每组只标组内首行（用户 2026-10-21 15:34/15:54 定版），
+            # 操作列不合并单元格；整组黄色高亮不受影响（is_bad 随组传递）
+            result[r['seq']] = (workno, abnormal if k == 0 else '',
+                                operator if k == 0 else '',
                                 is_pin, status != 'ok')
 
     # 写输出：账单自带 工作号/异常金额/操作(员) 模板列时写进原列，缺的才追加
@@ -341,9 +342,6 @@ def main():
     for top, bottom in merge_spans:
         ws.merge_cells(start_row=top, start_column=c_workno,
                        end_row=bottom, end_column=c_workno)
-        if ws.cell(top, c_op).value:   # 操作列随组一并合并（用户 2026-10-21 定版）
-            ws.merge_cells(start_row=top, start_column=c_op,
-                           end_row=bottom, end_column=c_op)
     print('同工作号归并 %d 组（合并工作号单元格 %d 处）'
           % (len([1 for v in by_key.values() if len(v) > 1]), len(merge_spans)))
     wb.save(a.out)
