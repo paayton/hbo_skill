@@ -1,9 +1,11 @@
 ---
 name: customs-fee-reconcile
-description: 宇中报关费账单对账（上海宇中报关行 SHAYUNSHG）。用户发来宇中报关费账单（.xls，含"提运单号/报关单号/报关费/联单费/查验费/加班费/合计"列）或要求核对报关费/清关费时：按提运单号去 HBO 查工作号，按 SHAYUNSHG 名下"清关费/报关费"累加值逐组核对账单合计；拼单（母子单）需上万海网页版查子单归组；输出原账单 + 工作号/异常金额/操作员三列，异常行黄色高亮。Use when 用户要求"核对报关费/对报关费账单"并附宇中报关费账单 .xls。
+description: 报关费对账（用户说"对报关单"即本类目：万海、COSCO、MSC 三家；已跑通样例：宇中报关行账单 SHAYUNSHG）。用户发来报关费/报关单账单（.xls，含"提运单号/报关单号/报关费/联单费/查验费/加班费/合计"列）或要求核对报关费/清关费时：按提运单号去 HBO 查工作号，按报关行名下"清关费/报关费"累加值逐组核对账单合计；拼单（母子单）需上万海网页版查子单归组；输出原账单 + 工作号/异常金额/操作员三列，异常行黄色高亮。Use when 用户要求"对报关单/核对报关费/对报关费账单"并附报关费账单 .xls。
 ---
 
-# 宇中报关费对账（SHAYUNSHG）
+# 报关费对账（万海 / COSCO / MSC）
+
+> **类目归属（2026-10-21 用户定版）**：用户说"对报关单/对报关费"即本技能。账单就是已跑通的报关费账单（宇中报关行 SHAYUNSHG 结算），其中"业务编号"列只是分属万海/COSCO/MSC 三家船公司，**核对逻辑与下方口径完全一致，无需区分船公司特殊处理**。
 
 ## 对账口径（2026-10-20 探库+用户定版，改规则必须问用户）
 
@@ -23,7 +25,7 @@ description: 宇中报关费账单对账（上海宇中报关行 SHAYUNSHG）。
    - 工作号：每组都填（母单+子单填同一个）；查无工作单留空
    - 异常金额：一致留空；否则写「系统查无此工作单 / 系统金额无票面X / 差额X（票面-系统）」
    - 操作(员) = 组内 HBO **应付费用行的录入人**（app_users.usercode 英文代码，如 KATELUO/ROSIEQIN；createuser→usercode 换算在 fetch_customs.py 里做），组内多行去重逗号连接；**组内无费用行则留空**（用户 2026-10-20 18:05 定版：**不要用账单"客户自编号"列**）
-9. 只有人民币，无美金/红色规则；销账费用剔除（沿用舱单费定版）
+9. 只有人民币，无美金规则；销账费用剔除（沿用舱单费定版）。**拼单一致行不再红色高亮（用户 2026-10-21 12:08 定版）**，全表只有异常行黄色（FFFF00），红色已废除
 10. **取数时滞**：文档部可能实时补录，异常偏多时重新 fetch 再判定
 
 ## 执行流程
@@ -36,7 +38,9 @@ description: 宇中报关费账单对账（上海宇中报关行 SHAYUNSHG）。
    先跑一次无 --groups 的 reconcile 圈出异常运单 → `python scripts/wanhai_groups.py --out groups.json --sonos <待查运单...>`（每个约 40-100 秒，页面很卡；建议增量分批跑，脚本每查完一个就落盘）
 4. 对账：`python scripts/reconcile_customs.py --bill 账单.xls --rows 账单_rows.csv --jobs jobs.csv --fees fees.csv --groups groups.json --out 输出.xlsx`
 5. 多月合并（用户要一份表单时）：逐月先各跑一份输出，再
-   `python scripts/merge_months.py --out 合并.xlsx 02月=a.xlsx 03月=b.xlsx ...` → 汇总 sheet + 每月一个 sheet
+   `python scripts/merge_months.py --out 合并.xlsx 02月=a.xlsx 03月=b.xlsx ...`
+   → 第一个 sheet「全部」= 所有月份账单行放在一起（首列加月份，逐月平移保留工作号合并），
+   其后每月一个 sheet。**不要统计汇总页，用户要的是全部明细放一张表（2026-10-21 定版）**
 5. 收尾：取数后必须 `python "<工作区>\hbo-reconcile-main\scripts\hbo_env.py" restore`（restore 后重开 HBO）；清理 inject_results.jsonl 里 >2MB 的行；抽查 1-2 个异常行手算复核
 
 ## 取数纪律（沿用 hbo-system.md）

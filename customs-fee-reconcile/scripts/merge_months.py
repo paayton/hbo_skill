@@ -1,43 +1,35 @@
 # -*- coding: utf-8 -*-
-"""合并各月对账结果 xlsx 为一份表单：汇总 sheet + 每月一个 sheet。
+"""合并各月对账结果 xlsx 为一份表单：第一个 sheet「全部」= 8 个月所有账单行放在一起
+（加月份列区分，工作号合并单元格逐月平移保留），其后每月一个 sheet。
 
 用法：
   python merge_months.py --out 合并.xlsx 02月=path.xlsx 03月=path.xlsx ...
-
-汇总 sheet 列：月份 / 账单行数 / 账单总额(CNY) / 一致 / 差额 / 系统金额无 / 查无工作单 /
-              红色拼单行 / 黄色异常行 / 异常说明
 """
 import argparse
 import copy
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.utils import get_column_letter
 
-RED_TAIL = 'FF0000'
-YEL_TAIL = 'FFFF00'
+HDR_FILL = PatternFill(start_color='D9E1F2', fill_type='solid')
+HDR_FONT = Font(bold=True)
+CENTER = Alignment(horizontal='center')
 
 
-def fill_kind(cell):
-    f = cell.fill
-    if not f or not f.fill_type:
-        return None
-    rgb = str(f.start_color.rgb or '')
-    if rgb.endswith(RED_TAIL):
-        return 'red'
-    if rgb.endswith(YEL_TAIL):
-        return 'yellow'
-    return None
+def copy_cell(src, dst):
+    dst.value = src.value
+    if src.has_style:
+        dst.fill = copy.copy(src.fill)
+        dst.font = copy.copy(src.font)
+        dst.alignment = copy.copy(src.alignment)
+        dst.border = copy.copy(src.border)
 
 
 def copy_sheet(src_ws, dst_ws):
     for row in src_ws.iter_rows():
         for c in row:
-            nc = dst_ws.cell(c.row, c.column, c.value)
-            if c.has_style:
-                nc.fill = copy.copy(c.fill)
-                nc.font = copy.copy(c.font)
-                nc.alignment = copy.copy(c.alignment)
-                nc.border = copy.copy(c.border)
+            copy_cell(c, dst_ws.cell(c.row, c.column))
     for rng in src_ws.merged_cells.ranges:
         dst_ws.merge_cells(str(rng))
     for col, dim in src_ws.column_dimensions.items():
@@ -48,49 +40,31 @@ def copy_sheet(src_ws, dst_ws):
             dst_ws.row_dimensions[r].height = dim.height
 
 
-def month_stats(ws):
-    hdr = None
-    colmap = {}
-    for i in range(1, 8):
-        vals = [str(c.value or '').strip() for c in ws[i]]
-        if '提运单号' in vals:
-            hdr = i
-            colmap = {v: j + 1 for j, v in enumerate(vals) if v}
-            break
-    c_total = colmap.get('合计(CNY)')
-    c_abn = colmap.get('异常金额')
-    n_rows = total = red = yellow = 0
-    abns = {}
-    for i in range(hdr + 1, ws.max_row + 1):
-        seq = str(ws.cell(i, 1).value or '').strip()
-        if not seq or seq == '总计':
-            continue
-        n_rows += 1
-        if c_total:
-            v = ws.cell(i, c_total).value
-            try:
-                total += float(v or 0)
-            except (TypeError, ValueError):
-                pass
-        k = fill_kind(ws.cell(i, 1))
-        if k == 'red':
-            red += 1
-        elif k == 'yellow':
-            yellow += 1
-        if c_abn:
-            a = str(ws.cell(i, c_abn).value or '').strip()
-            if a.startswith('差额'):
-                abns['差额'] = abns.get('差额', 0) + 1
-            elif a.startswith('系统金额无'):
-                abns['系统金额无'] = abns.get('系统金额无', 0) + 1
-            elif a.startswith('系统查无'):
-                abns['系统查无'] = abns.get('系统查无', 0) + 1
-    diff = abns.get('差额', 0)
-    zero = abns.get('系统金额无', 0)
-    nojob = abns.get('系统查无', 0)
-    ok = n_rows - diff - zero - nojob
-    return dict(rows=n_rows, total=total, ok=ok, diff=diff, zero=zero,
-                nojob=nojob, red=red, yellow=yellow)
+def append_month(all_ws, src_ws, month, row_off):
+    """把 src_ws 整个 sheet（标题/表头/数据/总计）追加到 all_ws，首列插月份。
+    返回新的行偏移。"""
+    nrows = src_ws.max_row
+    ncols = src_ws.max_column
+    for i in range(1, nrows + 1):
+        r = row_off + i
+        mc = all_ws.cell(r, 1, month if i >= 2 else None)   # 第1行原标题行留空
+        if i == 2:   # 表头行
+            mc.value = '月份'
+            mc.fill = copy.copy(HDR_FILL)
+            mc.font = copy.copy(HDR_FONT)
+            mc.alignment = copy.copy(CENTER)
+        for j in range(1, ncols + 1):
+            copy_cell(src_ws.cell(i, j), all_ws.cell(r, j + 1))
+    for rng in src_ws.merged_cells.ranges:
+        all_ws.merge_cells(start_row=rng.min_row + row_off, start_column=rng.min_col + 1,
+                           end_row=rng.max_row + row_off, end_column=rng.max_col + 1)
+    # 列宽（按首月为准，+1 列偏移）
+    if row_off == 0:
+        all_ws.column_dimensions['A'].width = 8
+        for col, dim in src_ws.column_dimensions.items():
+            if dim.width:
+                all_ws.column_dimensions[get_column_letter(dim.index + 1)].width = dim.width
+    return row_off + nrows
 
 
 def main():
@@ -105,34 +79,23 @@ def main():
         pairs.append((name, path))
 
     wb = Workbook()
-    ws_sum = wb.active
-    ws_sum.title = '汇总'
-    hdr_font = Font(bold=True)
-    hdr_fill = PatternFill(start_color='D9E1F2', fill_type='solid')
-    headers = ['月份', '账单行数', '账单总额(CNY)', '一致', '差额', '系统金额无',
-               '查无工作单', '红色拼单行', '黄色异常行']
-    for j, h in enumerate(headers, 1):
-        c = ws_sum.cell(1, j, h)
-        c.font = hdr_font
-        c.fill = hdr_fill
-        c.alignment = Alignment(horizontal='center')
-    r = 1
+    all_ws = wb.active
+    all_ws.title = '全部'
+    row_off = 0
     for name, path in pairs:
         src = load_workbook(path)
-        ss = src.active
-        st = month_stats(ss)
-        r += 1
-        vals = [name, st['rows'], round(st['total'], 2), st['ok'], st['diff'],
-                st['zero'], st['nojob'], st['red'], st['yellow']]
-        for j, v in enumerate(vals, 1):
-            ws_sum.cell(r, j, v)
+        row_off = append_month(all_ws, src.active, name, row_off)
+    all_ws.freeze_panes = 'A3'
+
+    for name, path in pairs:
+        src = load_workbook(path)
         ds = wb.create_sheet(name)
-        copy_sheet(ss, ds)
-    ws_sum.freeze_panes = 'A2'
-    for col, w in zip('ABCDEFGHI', (8, 9, 14, 7, 7, 11, 11, 11, 11)):
-        ws_sum.column_dimensions[col].width = w
+        copy_sheet(src.active, ds)
+
     wb.save(a.out)
-    print('合并完成 -> %s（%d 个月 + 汇总）' % (a.out, len(pairs)))
+    total_rows = row_off
+    print('合并完成 -> %s（全部 sheet %d 行 + %d 个月度 sheet）'
+          % (a.out, total_rows, len(pairs)))
 
 
 if __name__ == '__main__':
