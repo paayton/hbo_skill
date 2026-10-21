@@ -39,8 +39,9 @@ description: 报关费对账（用户说"对报关单"即本类目：万海、CO
 4. 对账：`python scripts/reconcile_customs.py --bill 账单.xls --rows 账单_rows.csv --jobs jobs.csv --fees fees.csv --groups groups.json --out 输出.xlsx`
 5. 多月合并（用户要一份表单时）：逐月先各跑一份输出，再
    `python scripts/merge_months.py --out 合并.xlsx 02月=a.xlsx 03月=b.xlsx ...`
-   → 第一个 sheet「全部」= 所有月份账单行放在一起（首列加月份，逐月平移保留工作号合并），
-   其后每月一个 sheet。**不要统计汇总页，用户要的是全部明细放一张表（2026-10-21 定版）**
+   → 只保留一个 sheet「全部」= 所有月份账单行放在一起（首列加月份，逐月平移保留
+   工作号合并）。**不要统计汇总页、不要月度 sheet，用户要的就是全部明细一张表
+   （2026-10-21 两次定版）**
 5. 收尾：取数后必须 `python "<工作区>\hbo-reconcile-main\scripts\hbo_env.py" restore`（restore 后重开 HBO）；清理 inject_results.jsonl 里 >2MB 的行；抽查 1-2 个异常行手算复核
 
 ## 取数纪律（沿用 hbo-system.md）

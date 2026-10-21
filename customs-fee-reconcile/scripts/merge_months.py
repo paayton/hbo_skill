@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
-"""合并各月对账结果 xlsx 为一份表单：第一个 sheet「全部」= 8 个月所有账单行放在一起
-（加月份列区分，工作号合并单元格逐月平移保留），其后每月一个 sheet。
+"""合并各月对账结果 xlsx 为一份表单：只保留一个 sheet「全部」——所有月份账单行
+放在一起（首列加月份区分，工作号合并单元格逐月平移保留）。
 
 用法：
   python merge_months.py --out 合并.xlsx 02月=path.xlsx 03月=path.xlsx ...
@@ -24,20 +24,6 @@ def copy_cell(src, dst):
         dst.font = copy.copy(src.font)
         dst.alignment = copy.copy(src.alignment)
         dst.border = copy.copy(src.border)
-
-
-def copy_sheet(src_ws, dst_ws):
-    for row in src_ws.iter_rows():
-        for c in row:
-            copy_cell(c, dst_ws.cell(c.row, c.column))
-    for rng in src_ws.merged_cells.ranges:
-        dst_ws.merge_cells(str(rng))
-    for col, dim in src_ws.column_dimensions.items():
-        if dim.width:
-            dst_ws.column_dimensions[col].width = dim.width
-    for r, dim in src_ws.row_dimensions.items():
-        if dim.height:
-            dst_ws.row_dimensions[r].height = dim.height
 
 
 def append_month(all_ws, src_ws, month, row_off):
@@ -87,15 +73,8 @@ def main():
         row_off = append_month(all_ws, src.active, name, row_off)
     all_ws.freeze_panes = 'A3'
 
-    for name, path in pairs:
-        src = load_workbook(path)
-        ds = wb.create_sheet(name)
-        copy_sheet(src.active, ds)
-
     wb.save(a.out)
-    total_rows = row_off
-    print('合并完成 -> %s（全部 sheet %d 行 + %d 个月度 sheet）'
-          % (a.out, total_rows, len(pairs)))
+    print('合并完成 -> %s（全部 sheet %d 行，%d 个月）' % (a.out, row_off, len(pairs)))
 
 
 if __name__ == '__main__':
