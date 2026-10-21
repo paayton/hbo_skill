@@ -245,8 +245,11 @@ def main():
             abnormal = '系统%s' % ('%g' % (sum(pool) / 100))
         stats[status] = stats.get(status, 0) + len(grows)
         is_pin = len({r['sono'] for r in grows}) > 1   # 加拼单号组（多运单归组）
-        for r in grows:
-            result[r['seq']] = (workno, abnormal, operator, is_pin)
+        for k, r in enumerate(grows):
+            # 异常金额每组只标一次（组内首行，用户 2026-10-21 15:34 定版"一次"）；
+            # 整组黄色高亮不受影响（is_bad 随组传递）
+            result[r['seq']] = (workno, abnormal if k == 0 else '', operator,
+                                is_pin, status != 'ok')
 
     # 写输出：账单自带 工作号/异常金额/操作(员) 模板列时写进原列，缺的才追加
     src = pd.read_excel(a.bill, header=None)
@@ -316,11 +319,11 @@ def main():
         slot += 1
         for j in range(1, ncol_src + 1):
             ws.cell(slot, j).value = snap[i][j - 1]
-        workno, abnormal, operator, _pin = result[seq_of[i]]
+        workno, abnormal, operator, _pin, is_bad = result[seq_of[i]]
         ws.cell(slot, c_workno, workno or None)
         ws.cell(slot, c_abn, abnormal or None)
         ws.cell(slot, c_op, operator or None)
-        fill = YELLOW if abnormal else NONE_FILL   # 拼单不再标红（用户 2026-10-21 定版）
+        fill = YELLOW if is_bad else NONE_FILL   # 整组黄色；拼单不再标红（用户定版）
         for j in range(1, ncol + 1):
             ws.cell(slot, j).fill = fill
         key = workno or None
