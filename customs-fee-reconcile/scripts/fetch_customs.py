@@ -200,9 +200,11 @@ def main():
     op_by_jobid = {}          # jobid -> 文件人员数字工号（主查询 SELECT 带 doc）
     main_rows = []             # (sono, blnoh, jobid)
     out_rows = []              # (sono, blnoh, jobid) 含箱号/尾段兜底
+    n_void = 0                 # 作废单/假单剔除计数（打日志，45631 教训：剔除必须可见）
     for jobid, sono, blnoh, op, isdel in jobs_rows:
         jobid, sono, blnoh = str(jobid), (sono or '').strip(), (blnoh or '').strip()
         if isdel == 'Y' or jobid in ('0', ''):
+            n_void += 1
             continue  # 作废单、假单剔除
         key = (sono, jobid)
         if key in seen:
@@ -212,6 +214,8 @@ def main():
         if op and str(op) not in ('0', 'None', ''):
             op_by_jobid[jobid] = str(op)
         main_rows.append((sono, blnoh or jobid, jobid))
+    if n_void:
+        print('剔除作废/假单 %d 行（不参与命中与映射）' % n_void)
     for s, jobid, blnoh in box_rows + tail_rows:
         key = (s, jobid)
         if key in seen:

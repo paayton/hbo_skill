@@ -313,9 +313,12 @@ def main():
         for k, r in enumerate(grows):
             # 异常金额+操作每组只标组内首行（用户 2026-10-21 15:34/16:05 定版，
             # 三列同span合并单元格）；整组黄色高亮不受影响（is_bad 随组传递）
+            # 带组键 gkey：写出侧归并/合并单元格必须按组键判定，不能只按工作号字符串——
+            # 实证 45626/45631 修复前是两个组同显一个工作号，被跨组合并，第二组的
+            # 判定结果被遮盖（教训 2026-10-22：合并键要与判定键同源）
             result[r['seq']] = (workno, abnormal if k == 0 else '',
                                 operator if k == 0 else '',
-                                is_pin, status != 'ok')
+                                is_pin, status != 'ok', gkey)
 
     # 写输出：账单自带 工作号/异常金额/操作(员) 模板列时写进原列，缺的才追加
     src = pd.read_excel(a.bill, header=None)
@@ -373,7 +376,12 @@ def main():
     by_key = {}
     for i in data_rows:
         w = result[seq_of[i]][0]
-        by_key.setdefault(w if w else ('', i), []).append(i)
+        g = result[seq_of[i]][5]
+        # 归并键 = (工作号, 组键)：同组且同显工作号才排在一起；
+        # 不同组即使工作号字符串相同也各自成组（2026-10-22 教训：45626/45631
+        # 修复前同显 GOSZX26050836 却被跨组合并，第二组判定被遮盖）；
+        # 无工作号的行各自成组留在原位
+        by_key.setdefault((w, g) if w else ('', i), []).append(i)
     ordered = []
     for _k, idxs in sorted(by_key.items(), key=lambda kv: min(kv[1])):
         ordered += idxs
@@ -385,14 +393,14 @@ def main():
         slot += 1
         for j in range(1, ncol_src + 1):
             ws.cell(slot, j).value = snap[i][j - 1]
-        workno, abnormal, operator, _pin, is_bad = result[seq_of[i]]
+        workno, abnormal, operator, _pin, is_bad, gkey = result[seq_of[i]]
         ws.cell(slot, c_workno, workno or None)
         ws.cell(slot, c_abn, abnormal or None)
         ws.cell(slot, c_op, operator or None)
         fill = YELLOW if is_bad else NONE_FILL   # 整组黄色；拼单不再标红（用户定版）
         for j in range(1, ncol + 1):
             ws.cell(slot, j).fill = fill
-        key = workno or None
+        key = (workno, gkey) if workno else None
         if key and key == run_key:
             run_bottom = slot
         else:
