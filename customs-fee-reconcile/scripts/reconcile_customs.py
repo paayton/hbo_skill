@@ -121,7 +121,7 @@ def system_group_key(sono):
     return None
 
 
-def build_row_groups(rows, groups_path):
+def build_row_groups(rows, groups_path, find_jobs=None):
     """返回 ({seq: group_key}, {group_key: set(万海组全部组员)})。
     同拼单组行共享 key；web_members 含不在本账单的组员，供费用池反查
     （组员的报关费可能记在账单外组员的工作单上，如 02月 WA666V20190 组）。"""
@@ -184,6 +184,32 @@ def build_row_groups(rows, groups_path):
     for so, seqs in seqs_by_sono.items():
         for s in seqs[1:]:
             union(seqs[0], s)
+
+    # c. 同工作单归组（数据驱动兜底，实证 2026-10-22）：不同提运单号解析到同一
+    # jobid → 必为同一拼单组。05月 177SPUPUS45626+177SPUPUS45631 同挂 GOSZX26050836
+    # （系统只认 45626 一个 sono，45631 靠箱号兜底命中），尾字母/COSU 归组规则盖不到
+    # 这类加拼单号；不并组会被分别判差额（80 vs 系统210、130 vs 系统210）。
+    # 万海(WA/WI)除外：走网页归组已定版，不动已验证结果
+    if find_jobs:
+        seqs_by_jobid = {}
+        for r in rows:
+            if r['sono'].startswith(('WA', 'WI')):
+                continue
+            js = set()
+            cands = {r['sono']}
+            k = system_group_key(r['sono'])
+            if k:
+                cands.add(k)
+            for s in cands:
+                for _no, jid in find_jobs(s):
+                    if jid and jid != '0':
+                        js.add(jid)
+            for jid in js:
+                seqs_by_jobid.setdefault(jid, []).append(r['seq'])
+        for jid, seqs in seqs_by_jobid.items():
+            if len(seqs) > 1:
+                for s in seqs[1:]:
+                    union(seqs[0], s)
     return {r['seq']: find(r['seq']) for r in rows}, web_members
 
 
@@ -201,7 +227,7 @@ def main():
     for r in rows:
         r['total_f'] = float(r['total'] or 0) if str(r['total']).strip() else 0.0
     find_jobs, fee_list_by_jobid, doc_by_jobid, other_by_jobid = load_maps(a.jobs, a.fees)
-    row_group, web_members = build_row_groups(rows, a.groups)
+    row_group, web_members = build_row_groups(rows, a.groups, find_jobs)
 
     groups = {}
     for r in rows:

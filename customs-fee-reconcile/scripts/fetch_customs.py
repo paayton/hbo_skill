@@ -100,8 +100,11 @@ def main():
                 print('【失败】%s 查询报错：%s' % (table, res['error']))
                 sys.exit(1)
             jobs_rows += res['rows']
-    # 老表兜底（2026 表查无的 sono 才去老表）
-    found = {(r[1] or '').strip() for r in jobs_rows}
+    # 老表兜底（2026 表查无的 sono 才去老表）。
+    # found 只算有效行：作废单(isdeleted='Y')不算命中，也别占 miss ——
+    # 实证 177SPUPUS45631 被老表作废单(GOSZX26050826,Y)挡掉箱号兜底导致"系统查无此工作单"
+    found = {(r[1] or '').strip() for r in jobs_rows
+             if r[4] != 'Y' and str(r[0]) not in ('0', '')}
     miss = [s for s in sonos if s not in found and not any(x.endswith(s) for x in found)]
     if miss:
         rs = fh.queue_and_wait(
@@ -118,7 +121,8 @@ def main():
     # 提运单号查无的，用账单箱号到 job_containers_2026 反查工作单。实证：WA666V20064
     # 的费用实际记在 sono=WA666V20057 的 GOSZX26011720 下（80 元），箱号一查即中；
     # 而工作号尾段反查会误配（GOSZX26020064 号码巧合但无费用）。
-    found = {(r[1] or '').strip() for r in jobs_rows}
+    found = {(r[1] or '').strip() for r in jobs_rows
+             if r[4] != 'Y' and str(r[0]) not in ('0', '')}
     miss = [s for s in sonos if s not in found and not any(x.endswith(s) for x in found)]
     box_rows = []   # (bill_sono, jobid, blnoh)
     box_miss = [s for s in miss if boxes_by_sono.get(s)]
