@@ -25,9 +25,12 @@ import json
 import os
 import sys
 
-CLIENTID = '1332541068'      # SHAYUNSHG 上海宇中报关行
+CLIENTID = '1332541068'      # SHAYUNSHG 上海宇中报关行（应收 rptype=2 / 应付 rptype=1 同代码，2026-10-22 用户定版）
 FEENAME = '清关费/报关费'
 FEEID = '1347041068'         # fil_feeitem.feename_c='清关费/报关费'（2026-10-20 探库验证）
+# 数值不一致时查验费纳入累加（用户 2026-10-22 定版）：feeid 运行时从 fil_feeitem 动态解析
+# '清关费/报关费' + 全部'%查验费%'名目（含拼箱查验费，实证 GOSZX26041656）；备注列经
+# information_schema 探测（失败则不带备注，不赌列名不中垂钓事务）
 
 # 工作单一条 SQL 搞定三种匹配（精确 / 去尾空格 / 后缀正则），不再分两条往返
 # serviceby = 委托单 sal_ordinfo 的"操作"（客服，用户 2026-10-21 16:31 在 HBO 界面核对定版；
@@ -42,14 +45,7 @@ SQL_JOBS = ("SELECT j.jobid, j.sono, j.blnoh, "
             "j.isdeleted FROM {table} j " + _DOC_JOIN +
             "WHERE j.sono IN ({inlist}) OR rtrim(j.sono) IN ({inlist}) "
             "OR rtrim(j.sono) ~ '({alts})$';")
-# 费用在 SQL 层锁定名目/应付/未作废/未销账，不 JOIN 费用字典、不拉无关名目，
-# 传回来的每一行都是要的（reconcile 侧仍保留同样过滤做双保险，兼容旧 fees.csv）
-SQL_FEES = ("SELECT a.jobid, a.rptype, a.amt, a.paypass, a.rpdate, a.createuser "
-            "FROM stl_arap_2026 a "
-            "WHERE a.clientid = '{cid}' AND a.feeid = '{feeid}' AND a.rptype = '1' "
-            "AND (a.isdeleted IS NULL OR a.isdeleted <> 'Y') "
-            "AND (a.paypass IS NULL OR a.paypass IN ('N','')) "
-            "AND a.jobid IN ({jobids});")
+# 费用 SQL 已内联到 main（名目集合动态解析，见 ①②③ 注释），不再用固定模板
 
 
 def inlist(items):
@@ -271,8 +267,41 @@ def main():
     fees_csv = os.path.join(outdir, 'fees.csv')
     m = 0
     if jobids:
+        # ① 名目动态解析：清关费/报关费 + 全部查验费家族（用户 2026-10-22 定版：数值
+        # 不一致时查验费纳入累加；字典小表一次查清，不猜 feeid）
         res = fh.queue_and_wait(
-            [SQL_FEES.format(cid=CLIENTID, feeid=FEEID, jobids=inlist(jobids))],
+            ["SELECT CAST(feeid AS TEXT), feename_c FROM fil_feeitem "
+             "WHERE feename_c = '%s' OR feename_c LIKE '%%查验费%%';" % FEENAME],
+            expect=1, timeout=a.timeout)[0]
+        if res['error']:
+            print('【失败】费用名目字典查询报错：%s' % res['error'])
+            sys.exit(1)
+        feeid_name = {str(fid): (name or '').strip() for fid, name in res['rows']}
+        if FEEID not in feeid_name:          # 字典里没查到主名目时保底，避免空 IN 列表
+            feeid_name[FEEID] = FEENAME
+        feeids = sorted(feeid_name)
+        print('费用名目 %d 个：%s' % (len(feeids), '、'.join(feeid_name[f] for f in feeids)))
+        # ② 备注列探测（information_schema 安全查询；查不到就带不出备注，不硬猜列名——
+        # 猜错会报错中止 HBO 会话事务，代价远大于少一列）
+        ru = fh.queue_and_wait(
+            ["SELECT column_name FROM information_schema.columns "
+             "WHERE table_name = 'stl_arap_2026' AND column_name IN "
+             "('remark','memo','note','notes','bz','feememo','description','summary');"],
+            expect=1, timeout=a.timeout)[0]
+        remark_col = ''
+        if not ru['error'] and ru['rows']:
+            remark_col = str(ru['rows'][0][0])
+        print('备注列：%s' % (remark_col or '（无，fees.csv 不带备注）'))
+        sel_remark = (', a.%s' % remark_col) if remark_col else ''
+        # 应付 rptype=1，名目集合锁定，SQL 层过滤未作废/未销账
+        res = fh.queue_and_wait(
+            ["SELECT a.jobid, a.feeid, a.rptype, a.amt, a.paypass, a.rpdate, a.createuser%s "
+             "FROM stl_arap_2026 a "
+             "WHERE a.clientid = '%s' AND a.feeid IN (%s) AND a.rptype = '1' "
+             "AND (a.isdeleted IS NULL OR a.isdeleted <> 'Y') "
+             "AND (a.paypass IS NULL OR a.paypass IN ('N','')) "
+             "AND a.jobid IN (%s);"
+             % (sel_remark, CLIENTID, inlist(feeids), inlist(jobids))],
             expect=1, timeout=a.timeout)[0]
         if res['error']:
             print('【失败】费用查询报错：%s' % res['error'])
@@ -280,8 +309,8 @@ def main():
         rows = res['rows']   # SQL 已锁定名目/应付/未作废/未销账
         # 录入人数字工号 -> 英文代码（app_users）
         ucode = {}
-        op_ids = sorted({str(r[5]) for r in rows
-                         if str(r[5] or '') not in ('', '0', 'None')})
+        op_ids = sorted({str(r[6]) for r in rows
+                         if str(r[6] or '') not in ('', '0', 'None')})
         if op_ids:
             ru = fh.queue_and_wait(
                 ["SELECT userid, usercode FROM app_users WHERE CAST(userid AS TEXT) IN (%s);"
@@ -291,16 +320,45 @@ def main():
                 ucode = {str(uid): (uc or '') for uid, uc in ru['rows']}
         with open(fees_csv, 'w', newline='', encoding='utf-8-sig') as f:
             w = csv.writer(f)
-            w.writerow(['jobid', 'rptype', 'feename_c', 'amt', 'paypass', 'rpdate', 'usercode'])
-            for jobid, rptype, amt, paypass, rpdate, createuser in rows:
+            w.writerow(['jobid', 'rptype', 'feename_c', 'amt', 'paypass', 'rpdate',
+                        'usercode', 'remark'])
+            for r in rows:
+                jobid, feeid, rptype, amt, paypass, rpdate, createuser = r[:7]
+                remark = str(r[7] or '').strip() if remark_col else ''
                 op = ucode.get(str(createuser), str(createuser or ''))
-                w.writerow([str(jobid), rptype or '', FEENAME, amt or '',
-                            '' if paypass in ('N', None, '') else str(paypass),
-                            str(rpdate or '')[:10], op])
+                w.writerow([str(jobid), rptype or '', feeid_name.get(str(feeid), ''),
+                            amt or '', '' if paypass in ('N', None, '') else str(paypass),
+                            str(rpdate or '')[:10], op, remark])
                 m += 1
+        # ③ 应收同代码备查（rptype=2，验证备注里提到的抵扣/欠款用——结算单位代码
+        # 应收应付通用 SHAYUNSHG，用户 2026-10-22 定版；实证 GOSZX25111440 应收 70 抵扣）
+        recv_csv = os.path.join(outdir, 'fees_recv.csv')
+        nrecv = 0
+        rr = fh.queue_and_wait(
+            ["SELECT a.jobid, a.feeid, a.amt, a.rpdate%s "
+             "FROM stl_arap_2026 a "
+             "WHERE a.clientid = '%s' AND a.feeid IN (%s) AND a.rptype = '2' "
+             "AND (a.isdeleted IS NULL OR a.isdeleted <> 'Y') "
+             "AND a.jobid IN (%s);"
+             % (sel_remark, CLIENTID, inlist(feeids), inlist(jobids))],
+            expect=1, timeout=a.timeout)[0]
+        with open(recv_csv, 'w', newline='', encoding='utf-8-sig') as f:
+            w = csv.writer(f)
+            w.writerow(['jobid', 'feename_c', 'amt', 'rpdate', 'remark'])
+            if not rr['error']:
+                for r in rr['rows']:
+                    remark = str(r[4] or '').strip() if remark_col else ''
+                    w.writerow([str(r[0]), feeid_name.get(str(r[1]), ''), r[2] or '',
+                                str(r[3] or '')[:10], remark])
+                    nrecv += 1
+            else:
+                print('警告：应收备查查询报错 %s（不影响应付主流程）' % rr['error'])
+        print('fees_recv.csv %d 行（应收备查，同代码 SHAYUNSHG，验证抵扣/欠款备注）' % nrecv)
     else:
         open(fees_csv, 'w', encoding='utf-8-sig').write(
-            'jobid,rptype,feename_c,amt,paypass,rpdate,usercode\n')
+            'jobid,rptype,feename_c,amt,paypass,rpdate,usercode,remark\n')
+        open(os.path.join(outdir, 'fees_recv.csv'), 'w', encoding='utf-8-sig').write(
+            'jobid,feename_c,amt,rpdate,remark\n')
 
     # 别家名下同名目应付费用（结算单位错录侦测，用户 2026-10-21 17:40 定版）：
     # 宇中名下没有、但别家名下有"清关费/报关费"应付未销账 → reconcile 在"系统无X"
@@ -312,11 +370,12 @@ def main():
             ["SELECT CAST(a.jobid AS TEXT), c.cliname_c, a.amt "
              "FROM stl_arap_2026 a LEFT JOIN crm_client c "
              "ON CAST(c.clientid AS TEXT) = CAST(a.clientid AS TEXT) "
-             "WHERE a.jobid IN ({jobids}) AND a.feeid = '{feeid}' AND a.rptype = '1' "
+             "WHERE a.jobid IN ({jobids}) AND a.feeid IN ({feeids}) AND a.rptype = '1' "
              "AND a.clientid <> '{cid}' "
              "AND (a.isdeleted IS NULL OR a.isdeleted <> 'Y') "
              "AND (a.paypass IS NULL OR a.paypass IN ('N','')) "
-             "ORDER BY a.jobid, a.amt DESC;".format(jobids=inlist(jobids), feeid=FEEID,
+             "ORDER BY a.jobid, a.amt DESC;".format(jobids=inlist(jobids),
+                                                    feeids=inlist(feeids),
                                                     cid=CLIENTID)],
             expect=1, timeout=a.timeout)[0]
         with open(other_csv, 'w', newline='', encoding='utf-8-sig') as f:
@@ -329,8 +388,8 @@ def main():
     else:
         open(other_csv, 'w', encoding='utf-8-sig').write('jobid,cliname,amt\n')
     print('fees_other.csv %d 行（别家名下同名目应付费用，结算单位错录侦测）' % k)
-    print('fees.csv %d 行（结算单位 SHAYUNSHG=%s，名目 %s，操作=createuser 英文代码）'
-          % (m, CLIENTID, FEENAME))
+    print('fees.csv %d 行（结算单位 SHAYUNSHG=%s，名目集合见上，操作=createuser 英文代码，含备注列）'
+          % (m, CLIENTID))
     print('下一步：python reconcile_customs.py --bill <账单.xls> --rows "%s" --jobs "%s" '
           '--fees "%s" --groups <groups.json> --out <输出.xlsx>'
           % (a.rows, jobs_csv, fees_csv))

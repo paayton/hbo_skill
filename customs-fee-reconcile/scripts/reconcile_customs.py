@@ -73,7 +73,10 @@ def load_maps(jobs_path, fees_path):
     fee_list_by_jobid = {}
     with open(fees_path, encoding='utf-8-sig') as f:
         for r in csv.DictReader(f):
-            if (r['feename_c'] or '').strip() != FEENAME:
+            # 名目集合：清关费/报关费 + 查验费家族（用户 2026-10-22 定版：数值不一致时
+            # 查验费纳入累加；旧 fees.csv 只有报关费行，过滤结果与旧版完全一致）
+            name = (r['feename_c'] or '').strip()
+            if name != FEENAME and '查验费' not in name:
                 continue
             if (r.get('rptype') or '1').strip() != '1':   # 只看应付，不看应收（用户定版）
                 continue
@@ -81,7 +84,8 @@ def load_maps(jobs_path, fees_path):
                 continue
             cents = int(round(float(r['amt'] or 0) * 100))
             fee_list_by_jobid.setdefault((r['jobid'] or '').strip(), []).append(
-                (cents, (r.get('usercode') or '').strip()))
+                (cents, (r.get('usercode') or '').strip(),
+                 (r.get('remark') or '').strip()))
 
     # 别家名下同名目应付费用（结算单位错录侦测）：jobid -> [(cliname, amt_str)]
     other_by_jobid = {}
@@ -267,11 +271,16 @@ def main():
         bill_cents = int(round(sum(r['total_f'] for r in grows) * 100))
         pool = []
         ops = []
+        remarks = []
         for j in jobids:
-            for cents, ucode in fee_list_by_jobid.get(j, []):
+            for cents, ucode, remark in fee_list_by_jobid.get(j, []):
                 pool.append(cents)
                 if ucode and ucode not in ops:
                     ops.append(ucode)
+                # 费用行备注（用户 2026-10-22 定版"看备注"）：差额/系统无组附进异常
+                # 文案，人工/Agent 据备注判正（抵扣、事后修改、费用构成等）
+                if remark and remark not in remarks:
+                    remarks.append(remark)
         # 显示工作号：只取账单内运单命中的工作单，优先有费用的；无后缀(真单)优先
         fee_jobs = [j for j in disp_ids if fee_list_by_jobid.get(j)]
         show_ids = fee_jobs or disp_ids
@@ -302,6 +311,8 @@ def main():
         else:
             status = 'diff'
             abnormal = '系统%s' % ('%g' % (sum(pool) / 100))
+        if remarks and status in ('diff', 'zero'):
+            abnormal += '（备注：%s）' % '；'.join(remarks)
         # 操作列规则（用户 2026-10-21 16:15/16:31 定版）：只有异常组才写操作名；
         # 差额组=费用录入人；系统无费用组=工作单操作（sal_ordinfo.serviceby，
         # 用户在工作单界面核对定版；不是文件人员 documentby、不是 opr_decby——后两者多为空）；
