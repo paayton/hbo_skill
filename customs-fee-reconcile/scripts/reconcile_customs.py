@@ -20,6 +20,10 @@
        COSU 纯数字超 10 位的按前 10 位数字核归组（646355248001 → 6463552480）
   - **拼单行不再特殊高亮（用户 2026-10-21 12:08 定版）**：只保留异常行黄色；归组仅用于
     正确归并/核对，加拼单号的一致行与普通一致行外观相同
+  - **事后修改改单（用户 2026-10-22 16:43 定版）**：费用行备注称"费用录在别的工作单上"
+    （如 费用录在GOSZX26061149上）→ 核该新单名下系统费用合计：== 账单合计 → 工作号
+    直接改显新单号、判正去黄；≠ 或系统未取到该单 → 工作号不动、异常文案注明待核，
+    继续黄色异常展示（人工已核对的走批注通道）
 
 输出（用户定版）：
   - 原账单不动；**账单自带 工作号/异常金额/操作 模板列时写进原列，绝不重复插入**
@@ -55,10 +59,13 @@ FEENAME = '清关费/报关费'
 def load_maps(jobs_path, fees_path):
     jobs_by_sono = {}
     doc_by_jobid = {}
+    jobno_by_jobid = {}
     with open(jobs_path, encoding='utf-8-sig') as f:
         for r in csv.DictReader(f):
             jobs_by_sono.setdefault((r['sono'] or '').strip(), []).append(
                 ((r['jobno'] or '').strip(), (r['jobid'] or '').strip()))
+            if (r['jobid'] or '').strip():
+                jobno_by_jobid[(r['jobid'] or '').strip()] = (r['jobno'] or '').strip()
             op = (r.get('op') or r.get('doc') or '').strip()   # op=工作单操作(serviceby)
             if op:
                 doc_by_jobid[(r['jobid'] or '').strip()] = op
@@ -96,7 +103,17 @@ def load_maps(jobs_path, fees_path):
             for r in csv.DictReader(f):
                 other_by_jobid.setdefault((r['jobid'] or '').strip(), []).append(
                     ((r.get('cliname') or '').strip(), (r.get('amt') or '').strip()))
-    return find_jobs, fee_list_by_jobid, doc_by_jobid, other_by_jobid
+    # 工作号名下费用合计（事后修改改单核验用，用户 2026-10-22 16:43 定版）：
+    # remark 称"费用录在GOSZXxxxx上"→ 核该工作号名下（全部映射 jobid 累加）
+    # 系统费用合计是否 == 账单合计
+    fee_sum_by_jobno = {}
+    for jid, lst in fee_list_by_jobid.items():
+        no = jobno_by_jobid.get(jid)
+        if no:
+            fee_sum_by_jobno[no] = fee_sum_by_jobno.get(no, 0) + sum(
+                c for c, _, _ in lst)
+    return (find_jobs, fee_list_by_jobid, doc_by_jobid, other_by_jobid,
+            fee_sum_by_jobno)
 
 
 def subset_match(target_cents, amounts):
@@ -235,7 +252,8 @@ def main():
     rows = list(csv.DictReader(open(a.rows, encoding='utf-8-sig')))
     for r in rows:
         r['total_f'] = float(r['total'] or 0) if str(r['total']).strip() else 0.0
-    find_jobs, fee_list_by_jobid, doc_by_jobid, other_by_jobid = load_maps(a.jobs, a.fees)
+    find_jobs, fee_list_by_jobid, doc_by_jobid, other_by_jobid, fee_sum_by_jobno = \
+        load_maps(a.jobs, a.fees)
     row_group, web_members = build_row_groups(rows, a.groups, find_jobs)
 
     groups = {}
@@ -287,7 +305,6 @@ def main():
         name_by_id = dict(zip(jobids, jobnos))
         disp = sorted({name_by_id[j] for j in show_ids if j in name_by_id},
                       key=lambda x: (re.search(r'[A-Z]$', x or '') is not None, x))
-        workno = ','.join(disp)
         if not jobids:
             status, abnormal = 'nojob', '系统查无此工作单'
         elif subset_match(bill_cents, pool):
@@ -313,6 +330,25 @@ def main():
             abnormal = '系统%s' % ('%g' % (sum(pool) / 100))
         if remarks and status in ('diff', 'zero'):
             abnormal += '（备注：%s）' % '；'.join(remarks)
+        # 事后修改改单（用户 2026-10-22 16:43 定版）：组判异常且备注称费用录在
+        # 别的工作单（"费用录在GOSZX26061149上"）→ 核新单名下系统费用合计：
+        # ==账单合计 → 工作号直接改显新单号、判正去黄；≠或系统未取到该单
+        # → 工作号不动、文案注明待核，继续黄色异常展示（人工已核对的走批注通道）
+        redirect = ''
+        for rm in remarks:
+            mt = re.search(r'录在\s*([A-Z]{2}\d{6,})\s*上', rm)
+            if mt:
+                redirect = mt.group(1)
+                break
+        if redirect and status in ('diff', 'zero') and redirect not in disp:
+            got = fee_sum_by_jobno.get(redirect)
+            if bill_cents > 0 and got == bill_cents:
+                status, abnormal, disp = 'ok', '', [redirect]
+            else:
+                abnormal += '（费用录在%s上，%s，待人工核）' % (
+                    redirect,
+                    '系统查到%g对不上' % (got / 100) if got else '系统未取数')
+        workno = ','.join(disp)
         # 操作列规则（用户 2026-10-21 16:15/16:31 定版）：只有异常组才写操作名；
         # 差额组=费用录入人；系统无费用组=工作单操作（sal_ordinfo.serviceby，
         # 用户在工作单界面核对定版；不是文件人员 documentby、不是 opr_decby——后两者多为空）；

@@ -360,6 +360,84 @@ def main():
         open(os.path.join(outdir, 'fees_recv.csv'), 'w', encoding='utf-8-sig').write(
             'jobid,feename_c,amt,rpdate,remark\n')
 
+    # ④ 备注引用新单补取（用户 2026-10-22 16:43 定版，"事后修改改单"自动核验的数据
+    # 支撑）：费用行备注称费用录在别的工作单（"录在GOSZX26061149上"）→ 按工作号
+    # 反查 jobid 并补取该单名下费用进 fees.csv / jobs.csv，reconcile 才能核验
+    # "新单名下金额 == 账单合计"并自动改显工作号；查无则维持黄色待人工核。
+    # 只认 录在/记在/挂在/转到/改到 动词后的工作号，防号码巧合误配
+    import re as _re1
+    _ref_pat = re.compile(r'(?:录在|记在|挂在|转到|改到)\s*([A-Z]{2}\d{6,})')
+    ref_nos = set()
+    for _cf in (fees_csv, os.path.join(outdir, 'fees_recv.csv')):
+        if not os.path.exists(_cf):
+            continue
+        with open(_cf, encoding='utf-8-sig') as f:
+            for r in csv.DictReader(f):
+                for mt in _ref_pat.finditer(r.get('remark') or ''):
+                    ref_nos.add(mt.group(1))
+    ref_nos = sorted(n for n in ref_nos if n not in set(bl_by_jobid.values()))
+    if ref_nos and jobids:
+        print('备注引用新单 %d 个：%s' % (len(ref_nos), '、'.join(ref_nos)))
+        ref_jobs = []
+        for table in ('job_shipping_2026', 'job_shipping'):
+            rs = fh.queue_and_wait(
+                ["SELECT jobid, sono, blnoh, isdeleted FROM %s WHERE blnoh IN (%s);"
+                 % (table, inlist(ref_nos))], expect=1, timeout=a.timeout)
+            for res in rs:
+                if res['error']:
+                    print('警告：备注引用新单查询报错 %s' % res['error'])
+                    continue
+                ref_jobs += res['rows']
+            if ref_jobs:
+                break
+        ref_ids, ref_rows = [], []
+        for jobid, sono, blnoh, isdel in ref_jobs:
+            jobid, sono, blnoh = str(jobid), (sono or '').strip(), (blnoh or '').strip()
+            if isdel == 'Y' or jobid in ('0', '') or blnoh not in ref_nos:
+                continue
+            ref_rows.append((sono, blnoh or jobid, jobid))
+            if jobid not in ref_ids and jobid not in bl_by_jobid:
+                ref_ids.append(jobid)
+        if ref_ids:
+            res = fh.queue_and_wait(
+                ["SELECT a.jobid, a.feeid, a.rptype, a.amt, a.paypass, a.rpdate, a.createuser%s "
+                 "FROM stl_arap_2026 a "
+                 "WHERE a.clientid = '%s' AND a.feeid IN (%s) AND a.rptype = '1' "
+                 "AND (a.isdeleted IS NULL OR a.isdeleted <> 'Y') "
+                 "AND (a.paypass IS NULL OR a.paypass IN ('N','')) "
+                 "AND a.jobid IN (%s);"
+                 % (sel_remark, CLIENTID, inlist(feeids), inlist(ref_ids))],
+                expect=1, timeout=a.timeout)[0]
+            if not res['error']:
+                uids = sorted({str(r[6]) for r in res['rows']
+                               if str(r[6] or '') not in ('', '0', 'None')})
+                ucode2 = {}
+                if uids:
+                    ru = fh.queue_and_wait(
+                        ["SELECT userid, usercode FROM app_users WHERE CAST(userid AS TEXT) IN (%s);"
+                         % ','.join("'%s'" % x for x in uids)],
+                        expect=1, timeout=a.timeout)[0]
+                    if not ru['error']:
+                        ucode2 = {str(uid): (uc or '') for uid, uc in ru['rows']}
+                with open(fees_csv, 'a', newline='', encoding='utf-8-sig') as f:
+                    w = csv.writer(f)
+                    for r in res['rows']:
+                        jobid, feeid, rptype, amt, paypass, rpdate, createuser = r[:7]
+                        remark = str(r[7] or '').strip() if remark_col else ''
+                        w.writerow([str(jobid), rptype or '',
+                                    feeid_name.get(str(feeid), ''), amt or '',
+                                    '' if paypass in ('N', None, '') else str(paypass),
+                                    str(rpdate or '')[:10],
+                                    ucode2.get(str(createuser), str(createuser or '')),
+                                    remark])
+                with open(jobs_csv, 'a', newline='', encoding='utf-8-sig') as f:
+                    w = csv.writer(f)
+                    for sono, blnoh, jobid in ref_rows:
+                        if jobid in ref_ids:
+                            w.writerow([sono, blnoh, jobid, ''])
+                print('补取备注引用新单 %d 个、费用 %d 行（供改单核验）'
+                      % (len(ref_ids), len(res['rows'])))
+
     # 别家名下同名目应付费用（结算单位错录侦测，用户 2026-10-21 17:40 定版）：
     # 宇中名下没有、但别家名下有"清关费/报关费"应付未销账 → reconcile 在"系统无X"
     # 后追加"（代码错误，录在XXX名下…）"。同 crm_client 取客户名。
