@@ -286,7 +286,7 @@ def main():
         ru = fh.queue_and_wait(
             ["SELECT column_name FROM information_schema.columns "
              "WHERE table_name = 'stl_arap_2026' AND column_name IN "
-             "('remark','memo','note','notes','bz','feememo','description','summary');"],
+             "('remarks','remark','memo','note','notes','bz','feememo','description','summary');"],
             expect=1, timeout=a.timeout)[0]
         remark_col = ''
         if not ru['error'] and ru['rows']:
