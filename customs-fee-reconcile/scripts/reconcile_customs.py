@@ -189,12 +189,12 @@ def build_row_groups(rows, groups_path, find_jobs=None):
     # jobid → 必为同一拼单组。05月 177SPUPUS45626+177SPUPUS45631 同挂 GOSZX26050836
     # （系统只认 45626 一个 sono，45631 靠箱号兜底命中），尾字母/COSU 归组规则盖不到
     # 这类加拼单号；不并组会被分别判差额（80 vs 系统210、130 vs 系统210）。
-    # 万海(WA/WI)除外：走网页归组已定版，不动已验证结果
+    # 万海不除外（用户 2026-10-22 定版）：同显一个工作号就该是一块——09月两组 WA
+    # （80096 组+80095 组）同挂 GOSZX26073061，网页分成两组也不拆块；工作号是 ground
+    # truth，网页归组只是找组工具
     if find_jobs:
         seqs_by_jobid = {}
         for r in rows:
-            if r['sono'].startswith(('WA', 'WI')):
-                continue
             js = set()
             cands = {r['sono']}
             k = system_group_key(r['sono'])
@@ -210,7 +210,12 @@ def build_row_groups(rows, groups_path, find_jobs=None):
             if len(seqs) > 1:
                 for s in seqs[1:]:
                     union(seqs[0], s)
-    return {r['seq']: find(r['seq']) for r in rows}, web_members
+    # web_members 键按最终根重映射：并组后旧根可能不再是根，不 remap 会丢费用池
+    # （万海组账单外组员的费用靠它收拢进池）
+    wm = {}
+    for k, members in web_members.items():
+        wm.setdefault(find(k), set()).update(members)
+    return {r['seq']: find(r['seq']) for r in rows}, wm
 
 
 def main():
