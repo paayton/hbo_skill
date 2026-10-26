@@ -330,14 +330,16 @@ def main():
                             amt or '', '' if paypass in ('N', None, '') else str(paypass),
                             str(rpdate or '')[:10], op, remark])
                 m += 1
-        # ③ 应收同代码备查（rptype=2，验证备注里提到的抵扣/欠款用——结算单位代码
-        # 应收应付通用 SHAYUNSHG，用户 2026-10-22 定版；实证 GOSZX25111440 应收 70 抵扣）
+        # ③ 应收同代码备查（rptype=0 才是应收——用户 2026-10-26 定版，实证
+        # GOSZX26012665 应收 140 为 rptype '0'，备注"XX家直接付报关行退70/代开"；
+        # 早期按 rptype='2' 查全空，HBO 该代码无 '2' 类；验证抵扣/欠款备注用，
+        # 结算单位代码应收应付通用 SHAYUNSHG，用户 2026-10-22 定版）
         recv_csv = os.path.join(outdir, 'fees_recv.csv')
         nrecv = 0
         rr = fh.queue_and_wait(
             ["SELECT a.jobid, a.feeid, a.amt, a.rpdate%s "
              "FROM stl_arap_2026 a "
-             "WHERE a.clientid = '%s' AND a.feeid IN (%s) AND a.rptype = '2' "
+             "WHERE a.clientid = '%s' AND a.feeid IN (%s) AND a.rptype = '0' "
              "AND (a.isdeleted IS NULL OR a.isdeleted <> 'Y') "
              "AND a.jobid IN (%s);"
              % (sel_remark, CLIENTID, inlist(feeids), inlist(jobids))],
