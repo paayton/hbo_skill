@@ -366,7 +366,7 @@ def main():
     # "新单名下金额 == 账单合计"并自动改显工作号；查无则维持黄色待人工核。
     # 只认 录在/记在/挂在/转到/改到 动词后的工作号，防号码巧合误配
     import re as _re1
-    _ref_pat = re.compile(r'(?:录在|记在|挂在|转到|改到)\s*([A-Z]{2}\d{6,})')
+    _ref_pat = _re1.compile(r'(?:录在|记在|挂在|转到|改到)\s*([A-Z]{2}\d{6,})')
     ref_nos = set()
     for _cf in (fees_csv, os.path.join(outdir, 'fees_recv.csv')):
         if not os.path.exists(_cf):
